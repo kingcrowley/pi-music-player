@@ -64,10 +64,183 @@ docs/
 | Feature docs | Users | Markdown | Feature slice + owner |
 | Troubleshooting | All users | Question/Answer (H2 headings) | As bugs are found |
 | Contributor guide | Developers | Markdown | Slice B3 |
+| Plugin API | Plugin developers | Markdown | Plugin core |
+
+---
+
+## Plugin Development Phases
+
+The plugin system is integrated across multiple slices. Plugin development interleave with core features:
+
+### Plugin Phases Overview
+
+| Phase | Slice | What's Added |
+|-------|-------|-------------|
+| **P1** | 1.5 | Plugin system foundation — base class, PluginManager, core hooks |
+| **P2** | 2.1 | First built-in plugins: ALSA audio backend, Statistics |
+| **P3** | 3.1 | Plugin ecosystem: recommendations, remote control, more |
+| **P4** | 4.1 | Plugin marketplace system — discovery, loading, configuration |
+| **P5** | 5.x | Community plugins — sleep timer, equalizer, etc. |
+
+### Plugin Phase Details
+
+#### P1: Plugin System Foundation (Slice 1.5)
+- MusicPlayerPlugin base class
+- PluginManager discovery and loading
+- Core event hooks (`on_song_change`, `on_playback_state`, etc.)
+- Plugin manifest system (`config.json`)
+- Plugin lifecycle (initialize, shutdown, get_capabilities)
+
+**Deliverables:**
+- `plugins/__init__.py` — PluginManager class
+- `core/plugin_base.py` — MusicPlayerPlugin abstract base
+- Minimal built-in plugin for testing
+
+#### P2: Built-in Plugins (Slices 2.1-2.3)
+- ALSA audio backend plugin
+- Statistics feature plugin
+- Remote control feature plugin
+- Configuration system integration
+
+**Deliverables:**
+- `plugins/audio-backends/alsa/alsa.py` — ALSA audio backend
+- `core/stats.py` — Play statistics module
+- Plugin settings integration
+
+#### P3: Plugin Ecosystem (Slices 3.1-3.3)
+- Recommendations plugin
+- Remote control web API plugin
+- Equalizer plugin (basic)
+- Plugin metadata browsing
+
+**Deliverables:**
+- `plugins/features/recommendations.py` — Co-occurrence model
+- `plugins/remote.py` — Web API on localhost:8080
+- `plugins/features/equalizer.py` — Basic equalizer
+
+#### P4: Plugin Marketplace (Slice 4.1)
+- Plugin discovery system
+- Plugin loading/unloading at runtime
+- Plugin configuration persistence
+- Plugin lifecycle management
+
+**Deliverables:**
+- Runtime plugin loader
+- Plugin settings persistence in config.json
+- Plugin enable/disable from UI
+
+#### P5: Community Plugins (Slices 5.x)
+- Sleep timer plugin
+- Equalizer plugin (advanced)
+- Bluetooth control plugin
+- Any community-contributed plugins
+
+**Deliverables:**
+- Sleep timer plugin
+- Advanced equalizer
+- Bluetooth integration
+- Plugin README template
+
+---
+
+## GitHub Documentation Structure
+
+```
+docs/
+├── README.md                         # Project overview, quickstart
+├── installation/
+│   ├── README.md                     # Installation overview
+│   ├── pi-zero-setup.md              # Complete Pi Zero 2W walkthrough
+│   ├── cross-distro.md              # Debian, Ubuntu, Fedora, Arch, Alpine, NixOS
+│   └── docker.md                     # Docker deployment (ARM64)
+├── configuration/
+│   ├── README.md                     # Config overview
+│   ├── mpd-setup.md                  # MPD daemon configuration per backend
+│   └── network-mounts.md             # SMB/NFS fstab templates
+├── usage/
+│   ├── dashboard-guide.md            # UI feature reference
+│   ├── keyboard-shortcuts.md         # All keybindings
+│   └── touch-gestures.md            # Touchscreen interaction guide
+├── features/
+│   ├── play-statistics.md            # Play statistics schema and usage
+│   ├── recommendations.md            # Music recommendation algorithm
+│   └── remote-control.md             # Web API and remote dashboard
+├── development/
+│   ├── README.md                     # Contributor guide
+│   ├── plugin-api.md                 # Plugin API specification
+│   ├── plugin-developer-guide.md     # Plugin development guide
+│   ├── testing.md                    # How to run tests
+│   └── release-process.md           # PyInstaller builds, GitHub release workflow
+├── troubleshooting/
+│   ├── README.md                     # Common issues index
+│   ├── audio-backend.md              # ALSA/PipeWire/PulseAudio issues
+│   ├── network-mounts.md             # SMB/NFS mount failures
+│   └── touch-screen.md               # Touchscreen calibration and drivers
+└── assets/
+    ├── screenshots/                  # Full-res screenshots for README
+    └── diagrams/                     # Architecture diagrams (ASCII + SVG)
+```
+
+### GitHub-Specific Documentation Workflow
+- **`docs/` committed directly to repo** — rendered natively via GitHub's Markdown preview
+- **`/docs` folder → GitHub Pages** enabled in repo settings (automatic HTTPS hosting)
+- **Each slice updates relevant doc files** — tracked in the slice checklist
+- **README.md updated at Phase 1, Phase 4 completion** for major feature milestones
+- **GitHub releases tagged** with changelog for each phase
+- **Plugin docs separate** in `docs/development/` for plugin developers
+
+### Documentation Standards
+| Doc Type | Target Audience | Format | Updated By |
+|----------|----------------|--------|------------|
+| README.md | Everyone | Markdown | Slice 1.5 / Phase 1 done |
+| Installation guides | New users | Markdown + bash blocks | Slice 1.4 / B2 |
+| Feature docs | Users | Markdown | Feature slice + owner |
+| Troubleshooting | All users | Question/Answer (H2 headings) | As bugs are found |
+| Contributor guide | Developers | Markdown | Slice B3 |
+| Plugin API | Plugin developers | Markdown | Plugin core |
 
 ---
 
 ## Slice Template (Updated — Now Includes Docs)
+
+Copy this for each slice:
+
+```markdown
+## Slice X.Y: [Name]
+
+**Target Date:** YYYY-MM-DD
+**Estimated Effort:** N days
+
+### Code Deliverables
+- [ ] File/module: description
+
+### Documentation Deliverables
+- [ ] Docs: Feature explanation (GitHub `docs/features/[[name]].md`)
+- [ ] Docs: Setup/guide (GitHub `docs/[[category]]/[[name]].md`)
+- [ ] Docs: Testing/use examples (GitHub `docs/usage/[[name]].md`)
+- [ ] README: Update section for completed slice (GitHub `README.md`)
+
+### Test Plan
+```bash
+# Exact commands to verify
+```
+
+### Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+### Dependencies
+- Requires: Slice X.Y-1 complete
+- Blocks: Slice X.Y+1
+
+### Notes / Risks
+- Risk: ...
+- Mitigation: ...
+```
+
+---
+
+## Phase 1: Core Player (Foundation)
 
 ---
 

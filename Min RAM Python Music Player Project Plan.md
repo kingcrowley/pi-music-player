@@ -1,4 +1,8 @@
-# Low-RAM Python Music Player: Project Plan
+# Low-Resource Linux Music Player: Project Plan
+
+## Project Vision
+
+A **modular, low-resource music player** for Linux systems — from Raspberry Pi Zero 2 W to desktops to servers. Built with Python 3 + Tkinter + a **plugin architecture** that lets anyone add audio backends, UI widgets, features, and integrations without modifying core code.
 
 ## Architecture Overview
 
@@ -10,17 +14,19 @@
                             │
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│                 Raspberry Pi Zero 2 W                  │
+│                 Linux System (any distro)               │
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │ MPD Daemon (Background audio engine for FLAC)    │  │
 │  └────────────────────────┬─────────────────────────┘  │
 │                           │ Local Socket               │
 │  ┌────────────────────────▼─────────────────────────┐  │
-│  │ Python 3 Application                             │  │
+│  │ Python 3 Application (Core Engine)               │  │
+│  │  ├── Plugin Manager (discovers, loads plugins)   │  │
 │  │  ├── Tkinter GUI (Low memory UI)                 │  │
 │  │  ├── python-mpd2 (Control commands)              │  │
-│  │  └── Mutagen + Requests (Album art handler)      │  │
+│  │  ├── Mutagen + Requests (Album art handler)      │  │
+│  │  └── Plugins/ (Audio backends, features, UI)     │  │
 │  └──────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────┘
 
@@ -33,19 +39,21 @@
 * **Audio & Network Engine:** **MPD (Music Player Daemon)**
 * Reads FLAC files natively from the OS-level network mount with minimal CPU usage.
 * Consumes under **15 MB RAM**.
-
+* **Plugin-based:** Audio backends (ALSA, PipeWire, PulseAudio) loaded as plugins.
 
 * **Python Controller Library:** `python-mpd2`
 * Lightweight IPC bridge to communicate locally with MPD.
-
 
 * **Metadata & Web Pipeline:** `mutagen` + `requests`
 * Primary: Local embedded artwork extraction via `mutagen`.
 * Fallback: External art fetching via HTTPS requests with strict timeouts.
 
-
 * **Touchscreen Framework:** `Tkinter`
 * Runs directly over standard X11 framebuffers without the heavy memory overhead of browser-based kiosks.
+
+* **Plugin System:** Core engine + plugin architecture
+* Plugins: audio backends, features, UI widgets, data sources, integrations.
+* Plugin API: `MusicPlayerPlugin` base class, capability registry, event hooks.
 
 
 
