@@ -24,11 +24,12 @@ def main():
 
     # Connect to MPD
     player = MusicPlayer()
+    connected = player.connect()  # Explicit connect attempt
 
-    print(f"\nConnection status: {player.is_connected()}")
+    print(f"\nConnection status: {connected}")
 
     # Test commands (only if connected)
-    if player.is_connected():
+    if connected:
         print("\nCurrent status:", player.get_status())
         print("Current song:", player.get_current_song())
 

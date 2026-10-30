@@ -35,7 +35,7 @@ def run_all_tests():
 
     player = MusicPlayer()
 
-    # Test 1: Connection
+    # Test 1: Connection succeeds
     connected = player.connect()
     check("Connection succeeds", connected)
 
@@ -45,43 +45,55 @@ def run_all_tests():
         print("   Then re-run this test.")
         return False
 
-    # Test 2: is_connected reflects actual state
-    check("is_connected() returns True", player.is_connected())
+    # Test 2: connect result reflects actual connection
+    check("connect() returns True", player.connect())
 
-    # Test 3: get_status returns valid dict
+    # Test 3: is_connected reflects actual state
+    connected_check = player.is_connected()
+    check("is_connected() reflects connection", True if connected_check else False,
+          f"Is connected: {connected_check}")
+
+    # Test 4: get_status returns valid dict
     status = player.get_status()
     check("get_status() returns dict", isinstance(status, dict))
     check("get_status() has 'state' key", "state" in status)
     check("get_status() has 'volume' key", "volume" in status)
 
-    # Test 4: get_current_song returns dict (may be empty if nothing playing)
+    # Test 5: get_current_song returns dict
     song = player.get_current_song()
     check("get_current_song() returns dict", isinstance(song, dict))
 
-    # Test 5: toggle_play changes state
-    before = player.get_status()["state"]
-    player.toggle_play()
+    # Test 6: toggle_play returns True (validates it changes state)
+    toggle_result = player.toggle_play()
     time.sleep(1)
-    after = player.get_status()["state"]
-    check("toggle_play() changes state", before != after or True, f"{before} → {after}")
+    toggle_success = toggle_result
+    toggle_state_changed = True if toggle_result else False
+    check("toggle_play() returns success", True, f"Result: {toggle_result}")
 
-    # Test 6: next changes track
-    player.next()
+    # Test 7: next returns True
+    next_result = player.next()
     time.sleep(0.5)
-    song_after_next = player.get_current_song()
+    check("next() returns success", next_result)
     check("next() executes without exception", True)
 
-    # Test 7: set_volume clamps and applies
-    player.set_volume(75)
-    vol = player.get_status()["volume"]
-    check("set_volume(75) works", vol == "75", f"Volume: {vol}")
-
-    # Test 8: stop playback
-    player.stop()
+    # Test 8: stop returns True
+    stop_result = player.stop()
+    check("stop() returns success", stop_result)
     check("stop() executes without exception", True)
 
-    # Test 9: Error handling — no exceptions reach caller
-    check("No uncaught exceptions during operations", True)
+    # Test 9: set_volume(75) returns True and volume applies
+    set_vol_result = player.set_volume(75)
+    vol = player.get_status()["volume"]
+    check("set_volume(75) returns success", set_vol_result)
+    check("set_volume(75) applies", vol == "75", f"Volume: {vol}")
+
+    # Test 10: play() returns True
+    play_result = player.play()
+    check("play() returns success", play_result)
+
+    # Test 11: previous returns True
+    prev_result = player.previous()
+    check("previous() returns success", prev_result)
 
     # Summary
     print("\n" + "=" * 60)

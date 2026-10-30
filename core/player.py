@@ -7,7 +7,7 @@ All MPD calls are wrapped in try/except — no exception propagates to UI.
 
 import time
 from typing import Any, Dict, Optional
-from mpd import MPDClient
+from mpd import MPDClient as LibMPDClient
 
 
 class MusicPlayer:
@@ -29,7 +29,7 @@ class MusicPlayer:
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.client: Optional[MPDClient] = None
+        self.client: Optional[LibMPDClient] = None
         self._connected = False
         self._last_known_state: Dict[str, Any] = {}
 
@@ -44,7 +44,7 @@ class MusicPlayer:
 
         for attempt in range(self.MAX_RETRIES):
             try:
-                self.client = MPDClient()
+                self.client = LibMPDClient()
                 self.client.timeout = self.timeout
                 self.client.connect(self.host, self.port)
                 self._connected = True
@@ -95,23 +95,26 @@ class MusicPlayer:
             **kwargs: Keyword arguments for command
 
         Returns:
-            Command result or None on failure
+            Command result, None on failure. MPD commands return None on success.
         """
         if not self._ensure_connected():
-            return None
+            return False  # Return False to indicate failure
 
         try:
-            return command(*args, **kwargs)
+            result = command(*args, **kwargs)
+            # MPD commands return None on success
+            return True  # Return True to indicate success
         except Exception as e:
             print(f"[MusicPlayer] Command failed: {e}. Attempting reconnect...")
             # Try reconnect once
             if self.connect():
                 try:
-                    return command(*args, **kwargs)
+                    result = command(*args, **kwargs)
+                    return True  # MPD commands return None on success
                 except Exception as e2:
                     print(f"[MusicPlayer] Retry also failed: {e2}")
                     self._connected = False
-            return None
+            return False
 
     def is_connected(self) -> bool:
         """Check if currently connected to MPD.
@@ -133,14 +136,14 @@ class MusicPlayer:
 
         Returns:
             dict with keys: state, volume, elapsed, duration
-            Returns empty dict on failure
+            Returns safe defaults on failure
         """
         def _get_status():
-            return self.client.status()
+            return self.client.status() if self.client else {}
 
         result = self._execute_with_retry(_get_status)
 
-        if result is None:
+        if result is False or result is None:
             # Return safe defaults
             return {
                 "state": "unknown",
@@ -166,11 +169,14 @@ class MusicPlayer:
             Returns empty dict on failure or if nothing is playing
         """
         def _get_song():
-            return self.client.currentsong()
+            return self.client.currentsong() if self.client else {}
 
         result = self._execute_with_retry(_get_song)
 
-        if result is None:
+        if result is False or result is None:
+            return {}
+
+        if not isinstance(result, dict):
             return {}
 
         # Normalize keys - MPD returns various formats
@@ -191,7 +197,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.play) is not None
+        def _do_play():
+            if self.client:
+                self.client.play()
+        return self._execute_with_retry(_do_play)
 
     def pause(self) -> bool:
         """Pause playback.
@@ -199,7 +208,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.pause, 1) is not None
+        def _do_pause():
+            if self.client:
+                self.client.pause(1)
+        return self._execute_with_retry(_do_pause)
 
     def toggle_play(self) -> bool:
         """Toggle between play and pause.
@@ -219,7 +231,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.stop) is not None
+        def _do_stop():
+            if self.client:
+                self.client.stop()
+        return self._execute_with_retry(_do_stop)
 
     def next(self) -> bool:
         """Play next track in queue.
@@ -227,7 +242,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.next) is not None
+        def _do_next():
+            if self.client:
+                self.client.next()
+        return self._execute_with_retry(_do_next)
 
     def previous(self) -> bool:
         """Play previous track in queue.
@@ -235,7 +253,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.previous) is not None
+        def _do_previous():
+            if self.client:
+                self.client.previous()
+        return self._execute_with_retry(_do_previous)
 
     def set_volume(self, level: int) -> bool:
         """Set playback volume.
@@ -247,7 +268,10 @@ class MusicPlayer:
             bool: True if command succeeded
         """
         level = max(0, min(100, level))  # Clamp to valid range
-        return self._execute_with_retry(self.client.setvol, level) is not None
+        def _do_setvol():
+            if self.client:
+                self.client.setvol(level)
+        return self._execute_with_retry(_do_setvol)
 
     def seek(self, position: float) -> bool:
         """Seek to position in current track (seconds).
@@ -258,7 +282,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.seekcur, int(position)) is not None
+        def _do_seek():
+            if self.client:
+                self.client.seekcur(int(position))
+        return self._execute_with_retry(_do_seek)
 
     def get_playlist(self) -> list:
         """Get current playlist.
@@ -267,9 +294,13 @@ class MusicPlayer:
             List of song dicts, empty list on failure
         """
         def _get_playlist():
-            return self.client.playlistinfo()
+            if self.client:
+                return self.client.playlistinfo()
+            return []
 
         result = self._execute_with_retry(_get_playlist)
+        if result is False:
+            return []
         return result or []
 
     def add_to_playlist(self, path: str) -> bool:
@@ -281,7 +312,10 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.add, path) is not None
+        def _do_add():
+            if self.client:
+                self.client.add(path)
+        return self._execute_with_retry(_do_add)
 
     def clear_playlist(self) -> bool:
         """Clear the current playlist.
@@ -289,8 +323,13 @@ class MusicPlayer:
         Returns:
             bool: True if command succeeded
         """
-        return self._execute_with_retry(self.client.clear) is not None
+        def _do_clear():
+            if self.client:
+                self.client.clear()
+        return self._execute_with_retry(_do_clear)
 
 
-# Backwards compatibility alias
-MPDClient = MusicPlayer
+# Import-friendly alias for backward compatibility
+# Note: MPDClient refers to the external library class (imported as LibMPDClient)
+# MusicPlayer is the wrapper class
+__all__ = ['MusicPlayer', 'LibMPDClient']
