@@ -63,31 +63,37 @@ def run_all_tests():
     song = player.get_current_song()
     check("get_current_song() returns dict", isinstance(song, dict))
 
-    # Test 6: toggle_play returns success
+    # Test 6: toggle_play returns True
     toggle_result = player.toggle_play()
-    check("toggle_play() returns success", toggle_result is True or toggle_result is None)
+    check("toggle_play() returns True", toggle_result is True, f"Result: {toggle_result}")
 
-    # Test 7: next returns success
+    # Test 7: next returns True
     next_result = player.next()
-    check("next() returns success", next_result is True or next_result is None)
+    check("next() returns True", next_result is True, f"Result: {next_result}")
 
-    # Test 8: stop returns success
+    # Test 8: stop returns True
     stop_result = player.stop()
-    check("stop() returns success", stop_result is True or stop_result is None)
+    check("stop() returns True", stop_result is True, f"Result: {stop_result}")
 
-    # Test 9: set_volume(75) returns success and volume applies
+    # Test 9: set_volume(75) returns True and volume applies
     set_vol_result = player.set_volume(75)
-    check("set_volume(75) returns success", set_vol_result is True or set_vol_result is None)
+    check("set_volume(75) returns True", set_vol_result is True, f"Result: {set_vol_result}")
     vol = player.get_status()["volume"]
     check("set_volume(75) applies", vol == "75", f"Volume: {vol}")
 
-    # Test 10: play() returns success
+    # Test 10: play() returns True
     play_result = player.play()
-    check("play() returns success", play_result is True or play_result is None)
+    check("play() returns True", play_result is True, f"Result: {play_result}")
 
-    # Test 11: previous returns success
+    # Test 11: previous returns True
     prev_result = player.previous()
-    check("previous() returns success", prev_result is True or prev_result is None)
+    check("previous() returns True", prev_result is True, f"Result: {prev_result}")
+
+    # Test 12: Stop playback after all tests to clean up
+    player.stop()
+    final_status = player.get_status()
+    check("MPD is stopped after tests", final_status.get("state") != "play",
+          f"Final state: {final_status.get('state')}")
 
     # Summary
     print("\n" + "=" * 60)

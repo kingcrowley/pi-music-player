@@ -89,20 +89,35 @@ class MusicPlayer:
     def _execute_with_retry(self, command, *args, **kwargs) -> Any:
         """Execute an MPD command with one retry on failure.
 
+        Attempts to run the provided MPD command once.
+        If the command fails (raises an exception), reconnects to MPD
+        and retries the command once before giving up.
+
+        MPD commands return None on success and raise exceptions on failure.
+        The result value is returned as-is (could be None for success).
+
         Args:
-            command: Callable MPD command
-            *args: Positional arguments for command
-            **kwargs: Keyword arguments for command
+            command: Callable MPD command to execute
+            *args: Positional arguments to pass to command
+            **kwargs: Keyword arguments to pass to command
 
         Returns:
-            Command result, None on failure. MPD commands return None on success.
+            Command execution result. MPD commands return None on success.
+            Returns False if command could not be executed after reconnect.
+            For playback control closures that return None on success,
+            this method returns True to indicate success.
         """
         if not self._ensure_connected():
             return False
 
         try:
             result = command(*args, **kwargs)
-            # MPD commands return None on success, return that result
+            # MPD commands return None on success for control commands.
+            # Return True for control success, otherwise return the actual result.
+            if result is None:
+                # Control command success (play, pause, etc.)
+                return True
+            # Query result — return as-is
             return result
         except Exception as e:
             print(f"[MusicPlayer] Command failed: {e}. Attempting reconnect...")
@@ -110,6 +125,9 @@ class MusicPlayer:
             if self.connect():
                 try:
                     result = command(*args, **kwargs)
+                    # Same logic: None means success for control commands
+                    if result is None:
+                        return True
                     return result
                 except Exception as e2:
                     print(f"[MusicPlayer] Retry also failed: {e2}")
