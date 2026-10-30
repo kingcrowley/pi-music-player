@@ -27,7 +27,7 @@ Complete specification for building plugins for the Low-Resource Linux Music Pla
 The music player uses a **plugin-first architecture**. Every major feature is implemented as a plugin:
 
 ```
-Core Engine (Python 3)
+Core Engine (Python 3 + Tkinter)
   ├── Plugin Manager (discovers, loads, unloads plugins)
   ├── Audio Backend Plugins (ALSA, PipeWire, PulseAudio)
   ├── Feature Plugins (Sleep timer, Equalizer, Stats)
@@ -37,7 +37,7 @@ Core Engine (Python 3)
 ```
 
 Plugins communicate through:
-- **Direct API calls** to the core engine
+- **Direct API calls** to the core engine via `self.core.player`, `self.core.ui` etc.
 - **Event hooks** (`on_song_change`, `on_volume_change`, etc.)
 - **Capability registry** (query which plugins provide which features)
 
@@ -47,13 +47,13 @@ Plugins communicate through:
 
 | Type | Capabilities | Example |
 |------|-------------|---------|
-| `audio-backend` | audio-output, volume-control | ALSA, PipeWire |
-| `feature` | sleep-timer, equalizer, repeat-mode | Sleep timer |
-| `ui-widget` | progress-bar, volume-slider, album-art | Progress bar |
-| `data-source` | music-library, playlist | Local filesystem |
-| `integration` | web-api, bluetooth, system-tray | Remote control API |
+| `audio-backend` | audio-output, volume-control | ALSA, PipeWire, PulseAudio |
+| `feature` | sleep-timer, equalizer, repeat-mode | Sleep timer, Equalizer |
+| `ui-widget` | progress-bar, volume-slider, album-art, status-display | Progress bar, Volume slider |
+| `data-source` | music-library, playlist, album-art | Local filesystem, SMB, Cloud |
+| `integration` | web-api, bluetooth, system-tray | Remote control API, Bluetooth |
 
-A plugin can declare multiple types/capabilities.
+A plugin can declare multiple types/capabilities for flexibility and modularity.
 
 ---
 
@@ -100,7 +100,7 @@ Every plugin directory must contain a `config.json` manifest:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `plugin_id` | string | Yes | Unique identifier (lowercase, hyphens) |
+| `plugin_id` | string | Yes | Unique identifier (lowercase, hyphens only) |
 | `name` | string | Yes | Human-readable plugin name |
 | `version` | string | Yes | Semantic versioning (major.minor.patch) |
 | `description` | string | Yes | One-sentence description |
@@ -122,7 +122,7 @@ All plugins must implement a class inheriting from the base plugin:
 ```python
 class MusicPlayerPlugin:
     def __init__(self, config):
-        """Initialize plugin with configuration dict from config.json"""
+        """Initialize plugin with configuration dict from config.json."""
         self.config = config
         self.name = config.get("name", "Unknown Plugin")
         self.version = config.get("version", "0.0.1")
@@ -153,7 +153,7 @@ class MusicPlayerPlugin:
         return []
     
     def handle_command(self, command, args=None):
-        """Handle commands from core or UI.
+        """Handle commands from core engine.
         
         Args:
             command: String command name
@@ -170,7 +170,7 @@ class MusicPlayerPlugin:
         Returns:
             dict: Current configuration values
         """
-        return self.config.get("settings_schema", {})
+        return {}
     
     def update_settings(self, settings):
         """Update plugin settings at runtime.
@@ -185,16 +185,16 @@ class MusicPlayerPlugin:
 
 ## Plugin Hooks and Events
 
-Plugins can register handlers for core events:
+Plugins register handlers for core events using `self.core.register_hook()`:
 
 | Hook | Triggered When | Args | Example Use |
 |------|---------------|------|-------------|
 | `on_song_change` | New track starts playing | `song_info` dict | Update UI, record stats |
-| `on_playback_state` | Play/pause/stop changes | `state` string | Sleep timer logic |
-| `on_volume_change` | Volume adjusted | `volume` int | UI volume slider update |
+| `on_playback_state` | Play/pause/stop changes | `state` string ("play", "pause", "stop") | Sleep timer logic |
+| `on_volume_change` | Volume adjusted | `volume` int (0-100) | UI volume slider update |
 | `on_error` | Error occurs | `error` dict | Error handling, logging |
-| `on_startup` | Core starts up | None | Initialize plugin state |
-| `on_shutdown` | Core shuts down | None | Clean up resources |
+| `on_startup` | Core engine starts | None | Initialize plugin state |
+| `on_shutdown` | Core engine exits | None | Clean up resources |
 | `on_user_interaction` | User touches UI | `interaction` dict | Analytics, telemetry |
 
 ### Registering Hooks
@@ -205,13 +205,10 @@ class MyPlugin(MusicPlayerPlugin):
         self.core = core
         core.register_hook("on_song_change", self.on_song_change)
         core.register_hook("on_playback_state", self.on_playback_state)
-    
-    def on_song_change(self, song_info):
-        print(f"Now playing: {song_info.get('title')}")
-    
-    def on_playback_state(self, state):
-        if state == "play":
-            print("Playback started")
+        core.register_hook("on_volume_change", self.on_volume_change)
+        core.register_hook("on_startup", self.on_startup)
+        core.register_hook("on_shutdown", self.on_shutdown)
+        return True
 ```
 
 ---
@@ -228,9 +225,14 @@ Capabilities are strings that describe what a plugin can do. The core engine que
 | `equalizer` | Frequency band adjustments | Equalizer plugin |
 | `progress-bar` | Displays playback progress | UI widget plugin |
 | `volume-slider` | Volume adjustment UI | UI widget plugin |
+| `album-art` | Displays album artwork | UI widget plugin |
 | `music-library` | Provides track listings | Local filesystem plugin |
+| `playlist` | Manages playlists | Playlist plugin |
 | `web-api` | HTTP API for remote control | Remote control plugin |
 | `bluetooth` | Bluetooth device control | Bluetooth integration plugin |
+| `notifications` | System notifications | Notifications plugin |
+| `recommendations` | Music recommendation engine | Recommendations plugin |
+| `statistics` | Play statistics tracking | Statistics plugin |
 
 ### Querying Capabilities
 
@@ -238,7 +240,7 @@ Capabilities are strings that describe what a plugin can do. The core engine que
 # Get all plugins that provide audio output
 audio_plugins = core.plugin_manager.get_plugins_with_capability("audio-output")
 
-# Use first available
+# Use first available backend
 if audio_plugins:
     audio_plugins[0].handle_command("play", {"path": "/music/track.flac"})
 ```
@@ -258,9 +260,13 @@ The PluginManager handles discovery, loading, and communication:
 | `unload_plugin(plugin_id)` | Unload and cleanup a plugin |
 | `get_plugin(plugin_id)` | Get plugin instance by ID |
 | `get_plugins_with_capability(capability)` | List plugins providing a capability |
+| `get_plugins_by_type(type_name)` | List plugins of a type |
 | `get_all_plugins()` | List all loaded plugins |
 | `register_hook(event_name, callback)` | Register event handler |
 | `trigger_hook(event_name, args)` | Trigger all handlers for an event |
+| `reload_plugin(plugin_id)` | Reload a plugin at runtime |
+| `disable_plugin(plugin_id)` | Disable a plugin without unloading |
+| `enable_plugin(plugin_id)` | Re-enable a disabled plugin |
 
 ### Example Usage
 
@@ -276,10 +282,15 @@ alsa_plugin = manager.get_plugin("alsa-audio")
 # Play a track
 alsa_plugin.handle_command("play", {"path": "/music/track.flac"})
 
-# Get all plugins that can control volume
+# Find plugins that can control volume
 volume_plugins = manager.get_plugins_with_capability("volume-control")
 for plugin in volume_plugins:
     plugin.handle_command("set_volume", {"level": 75})
+
+# List all audio backends
+backends = manager.get_plugins_by_type("audio-backend")
+for backend in backends:
+    print(f"Backend: {backend.name}, Capabilities: {backend.get_capabilities()}")
 ```
 
 ---
@@ -310,6 +321,8 @@ def handle_command(self, command, args=None):
     try:
         if command == "play":
             return self.play(args["path"])
+        elif command == "stop":
+            return self.stop()
     except Exception as e:
         self.core.handle_error("plugin-error", {
             "plugin": self.name,
@@ -333,10 +346,13 @@ import threading
 class MyPlugin(MusicPlayerPlugin):
     def download_artwork(self, url):
         def _download():
-            # Long-running download
-            pass
-        thread = threading.Thread(target=_download)
-        thread.daemon = True
+            try:
+                # Long-running download
+                pass
+            except Exception as e:
+                self.core.handle_error("download-error", {"error": str(e)})
+        
+        thread = threading.Thread(target=_download, daemon=True)
         thread.start()
 ```
 
@@ -344,15 +360,19 @@ class MyPlugin(MusicPlayerPlugin):
 
 ```python
 def update_settings(self, settings):
+    """Called when settings change from UI or config.json."""
     if "device" in settings:
         self.device = settings["device"]
         self.reinitialize_audio()
+    if "verbose" in settings:
+        self.verbose = settings["verbose"]
 ```
 
 ### 3. Declare All Capabilities
 
 ```python
 def get_capabilities(self):
+    """Declare what this plugin can do."""
     return ["audio-output", "volume-control", "seek"]
 ```
 
@@ -367,11 +387,14 @@ Description of what this plugin does.
 
 ## Installation
 
-Copy this directory to `plugins/my-plugin/`.
+1. Copy directory to `plugins/features/my-plugin/`
+2. Restart the player
 
 ## Configuration
 
-Edit `config.json` to customize settings.
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `verbose` | boolean | false | Enable verbose logging |
 
 ## License
 
@@ -391,14 +414,13 @@ import subprocess
 class MusicPlayerPlugin:
     def __init__(self, config):
         self.config = config
-        self.device = config.get("settings_schema", {}).get("device", "hw:0,0")
+        self.device = config.get("settings_schema", {}).get(
+            "device", {}
+        ).get("default", "hw:0,0")
     
     def initialize(self, core):
         self.core = core
         return True
-    
-    def shutdown(self):
-        pass
     
     def get_capabilities(self):
         return ["audio-output", "volume-control"]
@@ -450,12 +472,14 @@ class MusicPlayerPlugin:
         return None
     
     def start_timer(self, minutes):
-        self.stop_timer()  # Cancel existing
+        self.stop_timer()
         self.timer_active = True
+        seconds = minutes * 60
         
         def _timer():
-            time.sleep(minutes * 60)
+            time.sleep(seconds)
             if self.timer_active:
+                # Use core player to stop
                 self.core.player.stop()
                 self.timer_active = False
         
@@ -475,11 +499,12 @@ To share your plugin with the community:
 1. **Create a GitHub repo** named `your-plugin-name`
 2. **Include** `config.json`, plugin code, `README.md`, `LICENSE`
 3. **Tag releases** with semantic versioning
-4. **Add to the plugin registry** (see `docs/development/release-process.md`)
+4. **Add to plugin registry** or share link in GitHub Discussions
 
-Users can install via:
+Users can install by copying your plugin directory into `plugins/`:
 
 ```bash
-git clone https://github.com/yourusername/your-plugin.git plugins/your-plugin
-python3 -m plugins load your-plugin
+git clone https://github.com/yourusername/track-announcer.git \
+  plugins/features/announcer
+python3 main.py
 ```
