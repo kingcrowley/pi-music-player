@@ -93,9 +93,8 @@ database {
     auto_update "yes"
 }
 
-# cache_directory removed — not supported in this MPD version
-# Use default cache behavior instead
-cache_size "1024"
+# Cache settings omitted — this MPD version does not support cache_directory
+# or cache_size parameters. MPD will use its default cache behavior.
 
 bind_to_address "127.0.0.1"
 port "6600"
