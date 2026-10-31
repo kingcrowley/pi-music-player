@@ -37,7 +37,15 @@ def main():
     song = player.get_current_song()
     if song and song.get("file"):
         print(f"\nCurrent song: {song.get('artist', 'Unknown')} - {song.get('title', 'Unknown')}")
-        art_path = cache.get_art(song["file"])
+
+        # Resolve the song file path against MPD music directory
+        music_dir = _get_mpd_music_dir(player)
+        abs_file_path = _resolve_song_path(song["file"], music_dir)
+
+        print(f"Resolved file path: {abs_file_path}")
+
+        if os.path.exists(abs_file_path):
+            art_path = cache.get_art(abs_file_path)
         if art_path:
             print(f"Album art: {art_path}")
             print(f"  Size: {os.path.getsize(art_path)} bytes")

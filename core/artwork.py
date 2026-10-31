@@ -25,9 +25,11 @@ import threading
 import queue
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
+from collections import OrderedDict
+import hashlib
 
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3NoHeaderError
+from mutagen.id3 import ID3NoHeaderError, ID3
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
 from PIL import Image
@@ -44,7 +46,8 @@ class ArtworkCache:
     Attributes:
         max_size_mb: Maximum total cache size in megabytes
         cache_dir: Directory for storing cached art files
-        _cache: In-memory dict of filename -> file_size
+        _cache: OrderedDict of source_path -> (cache_path, file_size)
+        _cache_lock: Lock for thread-safe cache access
         _queue: Thread-safe queue for background operations
         _worker: Background thread for processing operations
     """
@@ -61,9 +64,13 @@ class ArtworkCache:
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "pi-music-player" / "artwork"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # In-memory cache: filename -> file_size_in_bytes
-        self._cache: Dict[str, int] = {}
+        # OrderedDict: source_path -> (cache_path, file_size_in_bytes)
+        # Ordered by access (most recently used last)
+        self._cache: OrderedDict[str, tuple] = OrderedDict()
         self._cache_lock = threading.Lock()
+
+        # Initialize cache from existing files
+        self._scan_existing_cache()
 
         # Operation queue for background processing
         self._queue = queue.Queue()
@@ -73,26 +80,51 @@ class ArtworkCache:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
+    def _scan_existing_cache(self):
+        """Scan cache directory and populate cache accounting.
+
+        Initializes the in-memory cache with information about
+        existing artwork files from previous runs.
+        """
+        if not self.cache_dir.exists():
+            return
+
+        for cache_file in self.cache_dir.iterdir():
+            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                try:
+                    size = cache_file.stat().st_size
+                    file_hash = cache_file.stem
+                    # Use the cache filename as the key (without extension)
+                    self._cache[file_hash] = (str(cache_file), size)
+                except Exception:
+                    pass
+
     def get_art(self, file_path: str, callback: Optional[Callable] = None) -> Optional[str]:
-        """Get album art for a file, with caching and background fallback.
+        """Get album art for a file, with caching and priority fallback.
 
         Extraction priority:
-        1. Embedded art (Mutagen)
-        2. Local sidecar file (folder.jpg / cover.jpg in same directory)
-        3. Web fallback (MusicBrainz/Cover Art Archive) — deferred
+        1. Cached art (check before extraction)
+        2. Embedded art (Mutagen)
+        3. Local sidecar file (folder.jpg / cover.jpg in same directory)
+        4. Web fallback (MusicBrainz/Cover Art Archive) — deferred to Slice 1.3
 
         Args:
             file_path: Path to audio file
-            callback: Optional callback(function) to call with result on UI thread
+            callback: Optional callback(function) to call with result
 
         Returns:
             Path to cached art file, or None if no art found
         """
         try:
             file_path = str(file_path)
-            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
 
-            # Quick check: try embedded art first
+            # Check cache first — return early with MRU update if cached
+            cached_result = self._check_cache(file_path)
+            if cached_result:
+                self._call_callback(callback, cached_result)
+                return cached_result
+
+            # Extract embedded art
             result = self._extract_embedded(file_path)
             if result:
                 self._cache_file(file_path, result)
@@ -106,20 +138,38 @@ class ArtworkCache:
                 self._call_callback(callback, sidecar_result)
                 return sidecar_result
 
-            # Queue web fallback for background processing
-            # (Web fallback is deferred to a later slice)
-            # For now, queue a "not found" result
-            if callback:
-                self._queue.put(("callback", callback, None))
-                # Process immediately in worker thread
-                self._worker_loop()
-
+            # No art found — invoke callback
+            self._call_callback(callback, None)
             return None
 
         except Exception as e:
             print(f"[ArtworkCache] Error processing {file_path}: {e}")
-            if callback:
-                self._call_callback(callback, None)
+            self._call_callback(callback, None)
+            return None
+
+    def _check_cache(self, file_path: str) -> Optional[str]:
+        """Check cache for existing artwork for a given audio file.
+
+        Returns the cached art file path if found and file still exists.
+        Updates MRU ordering on cache hit. Removes stale entries.
+
+        Args:
+            file_path: Path to audio file
+
+        Returns:
+            Cached art file path if exists and valid, None otherwise
+        """
+        with self._cache_lock:
+            if file_path in self._cache:
+                cache_path, _ = self._cache[file_path]
+                # Verify cache file still exists
+                if os.path.exists(cache_path):
+                    # Move to end (most recently used)
+                    self._cache.move_to_end(file_path)
+                    return cache_path
+                else:
+                    # Stale cache entry — remove it
+                    del self._cache[file_path]
             return None
 
     def _extract_embedded(self, file_path: str) -> Optional[str]:
@@ -128,7 +178,7 @@ class ArtworkCache:
         Supports:
         - FLAC: VorbisComment pictures
         - MP3: ID3v2 APIC frames
-        - M4A/iTunes: artwork atoms
+        - M4A/iTunes: artwork atoms (future)
 
         Args:
             file_path: Path to audio file
@@ -149,24 +199,14 @@ class ArtworkCache:
                 except Exception:
                     pass
 
-            # Try MP3
+            # Try MP3 using ID3 APIC frames
             elif filepath.suffix.lower() == ".mp3":
                 try:
-                    # Try EasyID3 first for quick check
-                    try:
-                        audio = EasyID3(file_path)
-                    except ID3NoHeaderError:
-                        audio = MP3(file_path)
-
-                    if audio.apic:
-                        pic = audio.apic[0]
-                        return self._save_artwork(pic.mime_type, pic.data)
-                    # Also check for MP3 with mutagen.File
-                    else:
-                        audio = MP3(file_path, ID3=2)
-                        if audio.tags and "APIC:" in audio.tags:
-                            pic_data = audio.tags["APIC:" + "data"]
-                            return self._save_artwork("image/jpeg", pic_data)
+                    id3 = ID3(file_path)
+                    apic_frames = id3.getall("APIC")
+                    if apic_frames:
+                        apic = apic_frames[0]
+                        return self._save_artwork(apic.mime, apic.data)
                 except Exception:
                     pass
 
@@ -174,7 +214,7 @@ class ArtworkCache:
             elif filepath.suffix.lower() in [".m4a", ".m4b"]:
                 try:
                     audio = MP3(file_path)  # Fallback
-                    # M4A handling would need mutagen.m4s
+                    # M4A handling would need mutagen.mp4
                     # For now, skip to next format
                     pass
                 except Exception:
@@ -201,13 +241,15 @@ class ArtworkCache:
         directory = filepath.parent
 
         # Common sidecar filenames
-        sidecar_names = ["folder.jpg", "cover.jpg", "front.jpg", "albumart.jpg", "front.jpg"]
+        sidecar_names = ["folder.jpg", "cover.jpg", "front.jpg", "albumart.jpg"]
 
         for name in sidecar_names:
             sidecar_path = directory / name
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
-                # Copy to cache directory with consistent naming
-                cache_path = self.cache_dir / f"{filepath.stem}.jpg"
+                # Derive unique filename from source path to prevent collisions
+                # when files in different dirs share the same stem
+                path_hash = hashlib.md5(str(filepath).encode()).hexdigest()[:12]
+                cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
                     import shutil
                     shutil.copy2(str(sidecar_path), str(cache_path))
@@ -230,14 +272,18 @@ class ArtworkCache:
         if not art_data:
             return None
 
-        # Determine cache filename based on MIME type and source
-        cache_path = self.cache_dir / f"art_{int(time.time() * 1000)}.{mime_type.split('/')[-1] if '/' in mime_type else 'jpg'}"
+        # Determine file extension from MIME type
+        if '/' in mime_type:
+            ext = mime_type.split('/')[-1]
+        else:
+            ext = 'jpg'
+
+        # Generate unique cache filename
+        cache_path = self.cache_dir / f"art_{int(time.time() * 1000)}.{ext}"
 
         try:
             with open(cache_path, "wb") as f:
                 f.write(art_data)
-            # Update cache size tracking
-            self._update_cache_size(len(art_data))
             return str(cache_path)
         except Exception as e:
             print(f"[ArtworkCache] Error saving artwork: {e}")
@@ -249,7 +295,7 @@ class ArtworkCache:
             return None
 
     def _cache_file(self, file_path: str, art_path: str) -> None:
-        """Update in-memory cache with artwork file size.
+        """Update in-memory cache with artwork file size and move to MRU.
 
         Args:
             file_path: Original audio file path
@@ -258,7 +304,8 @@ class ArtworkCache:
         try:
             art_size = os.path.getsize(art_path)
             with self._cache_lock:
-                self._cache[file_path] = art_size
+                self._cache[file_path] = (art_path, art_size)
+                self._cache.move_to_end(file_path)  # Mark as most recently used
             self._enforce_size_limit()
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -266,39 +313,24 @@ class ArtworkCache:
     def _enforce_size_limit(self) -> None:
         """Evict oldest cached art files when exceeding size limit.
 
-        Removes oldest entries from the cache dict until
+        Removes least-recently-used entries iteratively until
         total size is under the max_size_mb threshold.
         """
-        total_size = sum(self._cache.values())
-
-        if total_size <= self.max_size_mb * 1024 * 1024:
-            return  # Within limit
-
-        # Sort by insertion order (oldest first) and remove
-        # In a real implementation, we'd track insertion order explicitly
-        # For now, remove the first half of entries under size pressure
-        removed = 0
-        keys_to_remove = list(self._cache.keys())[: len(self._cache) // 2]
-
-        for key in keys_to_remove:
-            try:
-                cache_path = self.cache_dir / Path(key).stem + ".jpg"
-                if cache_path.exists():
-                    os.remove(cache_path)
-                removed += self._cache.pop(key, 0)
-            except Exception:
-                pass
-
-        # Recursive check in case we still exceed limit
-        if sum(self._cache.values()) > self.max_size_mb * 1024 * 1024:
-            self._enforce_size_limit()
+        with self._cache_lock:
+            while self._cache and sum(size for _, size in self._cache.values()) > self.max_size_mb * 1024 * 1024:
+                # Evict the oldest (first) entry
+                _, (cache_path, _) = self._cache.popitem(last=False)
+                try:
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                except Exception as e:
+                    print(f"[ArtworkCache] Error removing evicted cache file: {e}")
 
     def _call_callback(self, callback: Optional[Callable], result: Optional[str]) -> None:
-        """Call the callback function on the UI thread.
+        """Call the callback function with the result.
 
-        Tkinter and similar UI toolkits require callbacks to run
-        on the main thread. This method posts the callback to
-        the queue for the main thread to process.
+        Callbacks should handle UI thread dispatch themselves (e.g., using
+        root.after() in Tkinter applications) if called from a worker thread.
 
         Args:
             callback: Function to call with the result
@@ -308,14 +340,7 @@ class ArtworkCache:
             return
 
         try:
-            # For immediate execution (no threading needed)
-            if threading.current_thread() is threading.main_thread:
-                callback(result)
-            else:
-                # Schedule for main thread - in a real app this would use
-                # root.after() or similar; here we just call directly
-                # with a warning for simplicity
-                callback(result)
+            callback(result)
         except Exception as e:
             print(f"[ArtworkCache] Callback error: {e}")
 
@@ -353,7 +378,7 @@ class ArtworkCache:
                 print(f"[ArtworkCache] Worker loop error: {e}")
 
     def close(self) -> None:
-        """Gracefully shut down the worker thread."""
+        """Gracefully shut down the worker thread and enforce cache size."""
         self._worker_stop.set()
         self._worker.join(timeout=5.0)
         # Final cache enforcement
@@ -361,17 +386,18 @@ class ArtworkCache:
 
 
 # Convenience function for quick art retrieval
-def get_art(file_path: str, max_size_mb: int = 50) -> Optional[str]:
+def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:
     """Quick function to get album art without managing a cache instance.
 
     Args:
         file_path: Path to audio file
         max_size_mb: Maximum cache size in megabytes
+        cache_dir: Optional directory for storing cached art files
 
     Returns:
         Path to cached art file, or None if no art found
     """
-    cache = ArtworkCache(max_size_mb=max_size_mb)
+    cache = ArtworkCache(max_size_mb=max_size_mb, cache_dir=cache_dir)
     try:
         return cache.get_art(file_path)
     finally:
