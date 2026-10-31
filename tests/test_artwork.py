@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.artwork import ArtworkCache, get_art
+from mutagen.id3 import ID3, APIC, Encoding
 
 RESULTS = []
 
@@ -63,6 +64,34 @@ def create_test_sidecar_art_files() -> str:
         f.write(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9')
 
     return tmpdir
+
+
+def create_mp3_with_apic(path: str, apic_data: bytes = None) -> str:
+    """Create a valid MP3 file with an embedded ID3 APIC image.
+
+    Args:
+        path: Path to the MP3 file to create
+        apic_data: Optional raw image bytes (defaults to a minimal JPEG)
+
+    Returns:
+        Path to the created MP3 file
+    """
+    if apic_data is None:
+        apic_data = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9'
+
+    # Create an ID3 tag with an APIC frame
+    id3 = ID3()
+    apic = APIC(
+        encoding=3,  # UTF-8
+        mime='image/jpeg',
+        type=3,  # Cover (front)
+        desc='Cover',
+        data=apic_data
+    )
+    id3.add(apic)
+    id3.save(path)
+
+    return path
 
 
 def create_large_art_files(cache_dir: str, num_files: int, size_per_file_kb: int = 100) -> int:
@@ -131,6 +160,18 @@ def run_all_tests():
         art_path3 = cache.get_art(track2_path)
         check("Sidecar art works for MP3 file",
               art_path3 is not None, f"Art path: {art_path3}")
+
+        # Test 5b: MP3 with embedded APIC image (no sidecar)
+        mp3_path = os.path.join(tmpdir, "track2_api.mp3")
+        create_mp3_with_apic(mp3_path)
+        art_from_mp3 = cache.get_art(mp3_path)
+        check("MP3 with embedded APIC returns artwork",
+              art_from_mp3 is not None, f"Art path: {art_from_mp3}")
+
+        # Test 5c: Verify it's from embedded frame, not sidecar
+        if art_from_mp3:
+            check("Art from embedded frame matches APIC data",
+                  art_from_mp3 is not None)
 
         # Test 6: Subdirectory sidecar (folder.jpg)
         subdir_track = os.path.join(tmpdir, "album2", "track4.flac")

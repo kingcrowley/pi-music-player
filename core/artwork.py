@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from collections import OrderedDict
 import hashlib
+import uuid
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -131,15 +132,13 @@ class ArtworkCache:
 
             # Extract embedded art
             result = self._extract_embedded(file_path)
-            if result:
-                self._cache_file(file_path, result)
+            if result and self._cache_file(file_path, result):
                 self._call_callback(callback, result)
                 return result
 
             # Check local sidecar files
             sidecar_result = self._check_sidecar(file_path)
-            if sidecar_result:
-                self._cache_file(file_path, sidecar_result)
+            if sidecar_result and self._cache_file(file_path, sidecar_result):
                 self._call_callback(callback, sidecar_result)
                 return sidecar_result
 
@@ -283,8 +282,8 @@ class ArtworkCache:
         else:
             ext = 'jpg'
 
-        # Generate unique cache filename
-        cache_path = self.cache_dir / f"art_{int(time.time() * 1000)}.{ext}"
+        # Generate unique cache filename using UUID to prevent collisions
+        cache_path = self.cache_dir / f"art_{uuid.uuid4().hex}.{ext}"
 
         try:
             with open(cache_path, "wb") as f:
@@ -299,21 +298,37 @@ class ArtworkCache:
                 pass
             return None
 
-    def _cache_file(self, file_path: str, art_path: str) -> None:
+    def _cache_file(self, file_path: str, art_path: str) -> bool:
         """Update in-memory cache with artwork file size and move to MRU.
 
         Args:
             file_path: Original audio file path
             art_path: Path to the artwork cache file
+
+        Returns:
+            True if cache entry was accepted (file size within limit),
+            False if file exceeds size limit and was rejected/evicted.
         """
         try:
             art_size = os.path.getsize(art_path)
+            # Reject oversized files before caching
+            if art_size > self.max_size_mb * 1024 * 1024:
+                # Remove the oversized file and return False
+                try:
+                    os.remove(art_path)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    print(f"[ArtworkCache] Error removing rejected cache file: {e}")
+                return False
             with self._cache_lock:
                 self._cache[file_path] = (art_path, art_size)
                 self._cache.move_to_end(file_path)  # Mark as most recently used
             self._enforce_size_limit()
+            return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
+            return False
 
     def _enforce_size_limit(self) -> None:
         """Evict oldest cached art files when exceeding size limit.
