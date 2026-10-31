@@ -180,25 +180,30 @@ def run_all_tests():
 
         small_cache = ArtworkCache(max_size_mb=0.001, cache_dir=lru_cache_dir)
 
-        # Create several small art files
-        art_files = []
-        for i in range(10):
-            path = os.path.join(lru_dir, f"test_track_{i}.flac")
-            Path(path).touch()
-            art_files.append(path)
-
-        # Add art beyond the tiny limit
+        # Create art files larger than the cache limit (~1KB each)
+        # The cache limit is 0.001 MB = ~1024 bytes
         results_added = []
-        for i, af in enumerate(art_files[:3]):
+        for i in range(3):
+            # Create a track file
+            af = os.path.join(lru_dir, f"test_track_{i}.flac")
+            Path(af).touch()
+
+            # Create a large art file (~2KB) in the cache dir
+            art_path = os.path.join(lru_cache_dir, f"art_{i:03d}.jpg")
+            with open(art_path, "wb") as f:
+                # Write enough data to exceed 1KB limit
+                f.write(b'A' * 1500)
+
+            # Add art to cache — only 2 of 3 should fit under 0.001 MB limit
             result = small_cache.get_art(af)
             results_added.append(result)
 
-        # With max_size_mb=0.001 (~1KB), each art file is ~100 bytes
-        # So we should see some eviction
-        final_keys = list(small_cache._cache.keys())
-        check("LRU cache enforces size limit",
-              len(small_cache._cache) > 0,  # At least some cached
-              f"Cached entries: {len(small_cache._cache)}, total tracks: {len(art_files[:3])}")
+        # After 3 additions exceeding 0.001 MB limit, some should be evicted
+        # Check that cache still has entries but total size is limited
+        total_cached_size = sum(s for _, size in small_cache._cache.values())
+        check("LRU cache enforced size limit",
+              total_cached_size < 0.001 * 1024 * 1024,
+              f"Total cached size: {total_cached_size:.1f} bytes")
 
         small_cache.close()
 

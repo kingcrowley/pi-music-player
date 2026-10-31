@@ -44,6 +44,7 @@ def main():
 
         print(f"Resolved file path: {abs_file_path}")
 
+        art_path = None
         if os.path.exists(abs_file_path):
             art_path = cache.get_art(abs_file_path)
         if art_path:

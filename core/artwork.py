@@ -118,6 +118,11 @@ class ArtworkCache:
         try:
             file_path = str(file_path)
 
+            # Skip non-existent files immediately — no cache or sidecar effects
+            if not os.path.exists(file_path):
+                self._call_callback(callback, None)
+                return None
+
             # Check cache first — return early with MRU update if cached
             cached_result = self._check_cache(file_path)
             if cached_result:
