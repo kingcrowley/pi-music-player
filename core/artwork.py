@@ -81,6 +81,26 @@ class ArtworkCache:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
+    def _scan_existing_cache(self):
+        """Scan cache directory and populate cache accounting on init.
+
+        Initializes the in-memory cache from existing artwork files
+        found on disk from previous runs. Called before the worker
+        thread starts so existing cache entries are available
+        immediately.
+        """
+        if not self.cache_dir.exists():
+            return
+
+        for cache_file in self.cache_dir.iterdir():
+            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                try:
+                    size = cache_file.stat().st_size
+                    cache_key = cache_file.stem
+                    self._cache[cache_key] = (str(cache_file), size)
+                except Exception:
+                    pass
+
     def _cache_file(self, file_path: str, art_path: str) -> bool:
         """Update in-memory cache with artwork file size and move to MRU.
 
