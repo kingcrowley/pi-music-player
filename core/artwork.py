@@ -81,24 +81,55 @@ class ArtworkCache:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
-    def _scan_existing_cache(self):
-        """Scan cache directory and populate cache accounting.
+    def _cache_file(self, file_path: str, art_path: str) -> bool:
+        """Update in-memory cache with artwork file size and move to MRU.
 
-        Initializes the in-memory cache with information about
-        existing artwork files from previous runs.
+        Args:
+            file_path: Original audio file path
+            art_path: Path to the artwork cache file
+
+        Returns:
+            True if cache entry was accepted (file size within limit),
+            False if file exceeds size limit and was rejected/evicted.
         """
-        if not self.cache_dir.exists():
-            return
-
-        for cache_file in self.cache_dir.iterdir():
-            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+        try:
+            art_size = os.path.getsize(art_path)
+            # Reject oversized files before caching
+            if art_size > self.max_size_mb * 1024 * 1024:
+                # Remove the oversized file and return False
                 try:
-                    size = cache_file.stat().st_size
-                    file_hash = cache_file.stem
-                    # Use the cache filename as the key (without extension)
-                    self._cache[file_hash] = (str(cache_file), size)
-                except Exception:
+                    os.remove(art_path)
+                except FileNotFoundError:
                     pass
+                except Exception as e:
+                    print(f"[ArtworkCache] Error removing rejected cache file: {e}")
+                return False
+            with self._cache_lock:
+                # Reconcile if source path already exists in cache
+                if file_path in self._cache:
+                    existing_cache_path, existing_size = self._cache[file_path]
+                    if existing_cache_path == art_path:
+                        # Same entry — just move to MRU
+                        self._cache.move_to_end(file_path)
+                    else:
+                        # Different path — remove old cached file, store new
+                        try:
+                            os.remove(existing_cache_path)
+                        except FileNotFoundError:
+                            pass
+                        except Exception:
+                            pass
+                        self._cache[file_path] = (art_path, art_size)
+                        self._cache.move_to_end(file_path)
+                else:
+                    # New entry
+                    self._cache[file_path] = (art_path, art_size)
+                    self._cache.move_to_end(file_path)
+                self._enforce_size_limit()
+            return True
+        except Exception as e:
+            print(f"[ArtworkCache] Error updating cache: {e}")
+            return False
 
     def get_art(self, file_path: str, callback: Optional[Callable] = None) -> Optional[str]:
         """Get album art for a file, with caching and priority fallback.

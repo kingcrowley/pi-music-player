@@ -168,10 +168,15 @@ def run_all_tests():
         check("MP3 with embedded APIC returns artwork",
               art_from_mp3 is not None, f"Art path: {art_from_mp3}")
 
-        # Test 5c: Verify it's from embedded frame, not sidecar
+        # Test 5c: Verify it's from embedded frame, not sidecar — compare bytes
         if art_from_mp3:
+            # Read the extracted art file and compare with original APIC data
+            with open(art_from_mp3, "rb") as f:
+                extracted_data = f.read()
+            # The APIC data we embedded is the same as what we read back
             check("Art from embedded frame matches APIC data",
-                  art_from_mp3 is not None)
+                  extracted_data == b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9',
+                  f"Extracted size: {len(extracted_data)} bytes")
 
         # Test 6: Subdirectory sidecar (folder.jpg)
         subdir_track = os.path.join(tmpdir, "album2", "track4.flac")
