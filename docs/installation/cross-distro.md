@@ -6,13 +6,30 @@ Instructions for installing the music player on various Linux distributions.
 
 ---
 
-## Debian / Ubuntu / Raspberry Pi OS
-
 ### 1. System Dependencies
 
 ```bash
 sudo apt update
-sudo apt install -y mpd python3 python3-pip python3-tk cifs-utils nfs-common
+sudo apt install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-common
+```
+
+### Fix: Create MPD data directories and user
+
+```bash
+# Create the player user (no -d flag needed)
+sudo useradd -r -s /bin/false player
+
+# Add player to audio group for sound device access
+sudo usermod -aG audio player
+
+# Create the MPD data directories
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
+
+# Set ownership
+sudo chown -R player:player /var/lib/mpd /var/log/mpd
+
+# Set proper permissions
+sudo chmod 755 /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
 ```
 
 ### 2. Python Dependencies
