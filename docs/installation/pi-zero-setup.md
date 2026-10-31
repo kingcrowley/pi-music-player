@@ -53,9 +53,19 @@ sudo apt update && sudo apt upgrade -y
 # Install MPD + Python 3 + Tkinter + NAS tools
 sudo apt install -y mpd python3 python3-pip python3-tk cifs-utils nfs-common
 
-# Create unprivileged user for running MPD and the app
-sudo useradd -r -s /bin/false -d /var/lib/mpd player
-sudo chown -R player:player /var/lib/mpd /var/lib/mpd/cache
+# Create the player user (the -d flag requires the directory to exist)
+sudo useradd -r -s /bin/false player
+
+# Create the MPD data directories
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists
+
+# Set ownership
+sudo chown -R player:player /var/lib/mpd
+
+# Set proper permissions
+sudo chmod 755 /var/lib/mpd
+sudo chmod 755 /var/lib/mpd/cache
+sudo chmod 755 /var/lib/mpd/playlists
 ```
 
 ---
@@ -266,6 +276,24 @@ netstat -tlnp | grep 6600
 
 # Restart MPD
 sudo systemctl restart mpd
+```
+
+### "chown: cannot access '/var/lib/mpd': No such file or directory"
+
+```bash
+# The MPD data directories may not exist yet. Create them:
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists
+
+# Then set ownership
+sudo chown -R player:player /var/lib/mpd
+```
+
+### "useradd: user 'player' already exists"
+
+```bash
+# User already created — skip useradd and just set ownership
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache
+sudo chown -R player:player /var/lib/mpd
 ```
 
 ### Tkinter won't start
