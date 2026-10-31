@@ -93,7 +93,8 @@ database {
     auto_update "yes"
 }
 
-cache_directory "/var/lib/mpd/cache"
+# cache_directory removed — not supported in this MPD version
+# Use default cache behavior instead
 cache_size "1024"
 
 bind_to_address "127.0.0.1"
