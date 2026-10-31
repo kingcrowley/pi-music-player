@@ -246,7 +246,7 @@ def run_all_tests():
 
         # After 3 additions exceeding 0.001 MB limit, some should be evicted
         # Check that cache still has entries but total size is limited
-        total_cached_size = sum(s for _, size in small_cache._cache.values())
+        total_cached_size = sum(size for _, size in small_cache._cache.values())
         check("LRU cache enforced size limit",
               total_cached_size < 0.001 * 1024 * 1024,
               f"Total cached size: {total_cached_size:.1f} bytes")

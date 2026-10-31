@@ -33,8 +33,8 @@ def main():
     print("\n--- Album Art Test ---")
     cache = ArtworkCache(max_size_mb=5)
 
-    # Get current song's art
-    song = player.get_current_song()
+    # Get current song's art (skip if MPD not connected)
+    song = player.get_current_song() if connected else {}
     if song and song.get("file"):
         print(f"\nCurrent song: {song.get('artist', 'Unknown')} - {song.get('title', 'Unknown')}")
 
