@@ -10,7 +10,7 @@ Instructions for installing the music player on various Linux distributions.
 
 ```bash
 sudo apt update
-sudo apt install -y mpd python3 python3-pip python3-tk cifs-utils nfs-common
+sudo apt install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-common
 ```
 
 ### Fix: Create MPD data directories and user
@@ -53,7 +53,7 @@ python3 main.py
 ### 1. System Dependencies
 
 ```bash
-sudo dnf install -y mpd python3 python3-pip python3-tk cifs-utils nfs-utils
+sudo dnf install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-utils
 ```
 
 ### 2. Python Dependencies

@@ -8,12 +8,51 @@ For now: test MPD connection and album art extraction.
 import sys
 import os
 import time
+import subprocess
 
 # Ensure core package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.player import MusicPlayer
 from core.artwork import ArtworkCache
+
+
+def _get_mpd_music_dir(player) -> str:
+    """Get MPD music directory from config or default."""
+    try:
+        # Try to get music_directory from MPD config
+        result = subprocess.run(
+            ["mpc", "config", "music_directory"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    # Fallback to default
+    return "/mnt/nas/music"
+
+
+def _resolve_song_path(song_file: str, music_dir: str) -> str:
+    """Resolve a song file path against the MPD music directory.
+
+    MPD returns file paths relative to the configured music_directory.
+    This function resolves them to absolute filesystem paths.
+
+    Args:
+        song_file: Relative path from MPD (e.g., "Artist/Album/Track.flac")
+        music_dir: Absolute path to MPD music directory
+
+    Returns:
+        Absolute filesystem path to the audio file
+    """
+    if not song_file:
+        return ""
+    # If already absolute, return as-is
+    if os.path.isabs(song_file):
+        return song_file
+    # Resolve relative to music directory
+    return os.path.join(music_dir, song_file)
 
 
 def main():
@@ -33,7 +72,7 @@ def main():
     print("\n--- Album Art Test ---")
     cache = ArtworkCache(max_size_mb=5)
 
-    # Get current song's art (skip if MPD not connected)
+    # Get current song's art
     song = player.get_current_song() if connected else {}
     if song and song.get("file"):
         print(f"\nCurrent song: {song.get('artist', 'Unknown')} - {song.get('title', 'Unknown')}")
@@ -44,13 +83,15 @@ def main():
 
         print(f"Resolved file path: {abs_file_path}")
 
-        art_path = None
         if os.path.exists(abs_file_path):
             art_path = cache.get_art(abs_file_path)
-        if art_path:
-            print(f"Album art: {art_path}")
-            print(f"  Size: {os.path.getsize(art_path)} bytes")
+            if art_path:
+                print(f"Album art: {art_path}")
+                print(f"  Size: {os.path.getsize(art_path)} bytes")
+            else:
+                print("No album art found for current track")
         else:
+            print(f"File not found: {abs_file_path}")
             print("No album art found for current track")
     else:
         print("No song currently playing")

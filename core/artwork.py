@@ -28,6 +28,7 @@ from typing import Optional, Callable, Dict, Any
 from collections import OrderedDict
 import hashlib
 import uuid
+from collections import defaultdict
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -70,6 +71,9 @@ class ArtworkCache:
         self._cache: OrderedDict[str, tuple] = OrderedDict()
         self._cache_lock = threading.Lock()
 
+        # Per-source-path locks for concurrent access serialization
+        self._path_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+
         # Initialize cache from existing files
         self._scan_existing_cache()
 
@@ -93,7 +97,7 @@ class ArtworkCache:
             return
 
         for cache_file in self.cache_dir.iterdir():
-            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']:
                 try:
                     size = cache_file.stat().st_size
                     cache_key = cache_file.stem
@@ -181,21 +185,31 @@ class ArtworkCache:
                 self._call_callback(callback, cached_result)
                 return cached_result
 
-            # Extract embedded art
-            result = self._extract_embedded(file_path)
-            if result and self._cache_file(file_path, result):
-                self._call_callback(callback, result)
-                return result
+            # Per-source-path serialization to prevent concurrent extraction
+            # for the same track. Double-checked locking pattern.
+            path_lock = self._path_locks[file_path]
+            with path_lock:
+                # Re-check cache after acquiring lock (double-check)
+                cached_result = self._check_cache(file_path)
+                if cached_result:
+                    self._call_callback(callback, cached_result)
+                    return cached_result
 
-            # Check local sidecar files
-            sidecar_result = self._check_sidecar(file_path)
-            if sidecar_result and self._cache_file(file_path, sidecar_result):
-                self._call_callback(callback, sidecar_result)
-                return sidecar_result
+                # Extract embedded art
+                result = self._extract_embedded(file_path)
+                if result and self._cache_file(file_path, result):
+                    self._call_callback(callback, result)
+                    return result
 
-            # No art found — invoke callback
-            self._call_callback(callback, None)
-            return None
+                # Check local sidecar files
+                sidecar_result = self._check_sidecar(file_path)
+                if sidecar_result and self._cache_file(file_path, sidecar_result):
+                    self._call_callback(callback, sidecar_result)
+                    return sidecar_result
+
+                # No art found — invoke callback
+                self._call_callback(callback, None)
+                return None
 
         except Exception as e:
             print(f"[ArtworkCache] Error processing {file_path}: {e}")
@@ -330,6 +344,17 @@ class ArtworkCache:
         # Determine file extension from MIME type
         if '/' in mime_type:
             ext = mime_type.split('/')[-1]
+            # Normalize common extensions
+            ext_map = {
+                'jpeg': 'jpg',
+                'png': 'png',
+                'webp': 'webp',
+                'gif': 'gif',
+                'bmp': 'bmp',
+                'tiff': 'tiff',
+                'tif': 'tiff',
+            }
+            ext = ext_map.get(ext, ext)
         else:
             ext = 'jpg'
 
