@@ -10,7 +10,7 @@ Instructions for installing the music player on various Linux distributions.
 
 ```bash
 sudo apt update
-sudo apt install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-common
+sudo apt install -y mpd python3 python3-pip python3-tk cifs-utils nfs-common
 ```
 
 ### Fix: Create MPD data directories and user
@@ -270,7 +270,8 @@ nas-ip:/music /mnt/nas/music nfs defaults,vers=4.1,hard,intr 0 0
 Test:
 
 ```bash
-sudo mount -a
+sudo umount /mnt/nas/music 2>/dev/null || true
+sudo mount /mnt/nas/music
 ls /mnt/nas/music/
 ```
 

@@ -96,7 +96,6 @@ auto_update        "no"
 database {
     plugin          "simple"
     path            "/var/lib/mpd/mpd.db"
-    cache_directory "/var/lib/mpd/cache"
 }
 
 audio_output {
@@ -121,14 +120,6 @@ Disable MPD's systemd socket (it binds port 6600 on all interfaces regardless of
 
 ```bash
 sudo systemctl disable --now mpd.socket
-```
-
-Start MPD:
-
-```bash
-sudo systemctl enable mpd
-sudo systemctl start mpd
-sudo systemctl status mpd
 ```
 
 ---
@@ -164,10 +155,11 @@ Edit `/etc/fstab`:
 # nas-ip:/music /mnt/nas/music nfs defaults,vers=4.1,_netdev,x-systemd.automount 0 0
 ```
 
-Test mount:
+Test mount (unmount first if already mounted, then remount with new options):
 
 ```bash
-sudo mount -a
+sudo umount /mnt/nas/music 2>/dev/null || true
+sudo mount /mnt/nas/music
 ls /mnt/nas/music/
 ```
 
