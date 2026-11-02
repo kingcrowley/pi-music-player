@@ -28,7 +28,6 @@ from typing import Optional, Callable, Dict, Any
 from collections import OrderedDict
 import hashlib
 import uuid
-from collections import defaultdict
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -52,6 +51,7 @@ class ArtworkCache:
         _cache_lock: Lock for thread-safe cache access
         _queue: Thread-safe queue for background operations
         _worker: Background thread for processing operations
+        _path_locks: Per-source-path locks for concurrent access serialization
     """
 
     def __init__(self, max_size_mb: int = 50, cache_dir: Optional[str] = None):
@@ -72,7 +72,8 @@ class ArtworkCache:
         self._cache_lock = threading.Lock()
 
         # Per-source-path locks for concurrent access serialization
-        self._path_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._path_locks: Dict[str, threading.Lock] = {}
+        self._path_locks_lock = threading.Lock()
 
         # Initialize cache from existing files
         self._scan_existing_cache()
@@ -97,124 +98,18 @@ class ArtworkCache:
             return
 
         for cache_file in self.cache_dir.iterdir():
-            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']:
+            if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    cache_key = cache_file.stem
-                    self._cache[cache_key] = (str(cache_file), size)
+                    content_hash = hashlib.content_hash(cache_file.read_bytes())
+                    self._cache[content_hash] = (str(cache_file), size)
                 except Exception:
                     pass
 
-    def _cache_file(self, file_path: str, art_path: str) -> bool:
-        """Update in-memory cache with artwork file size and move to MRU.
-
-        Args:
-            file_path: Original audio file path
-            art_path: Path to the artwork cache file
-
-        Returns:
-            True if cache entry was accepted (file size within limit),
-            False if file exceeds size limit and was rejected/evicted.
-        """
-        try:
-            art_size = os.path.getsize(art_path)
-            # Reject oversized files before caching
-            if art_size > self.max_size_mb * 1024 * 1024:
-                # Remove the oversized file and return False
-                try:
-                    os.remove(art_path)
-                except FileNotFoundError:
-                    pass
-                except Exception as e:
-                    print(f"[ArtworkCache] Error removing rejected cache file: {e}")
-                return False
-            with self._cache_lock:
-                # Reconcile if source path already exists in cache
-                if file_path in self._cache:
-                    existing_cache_path, existing_size = self._cache[file_path]
-                    if existing_cache_path == art_path:
-                        # Same entry — just move to MRU
-                        self._cache.move_to_end(file_path)
-                    else:
-                        # Different path — remove old cached file, store new
-                        try:
-                            os.remove(existing_cache_path)
-                        except FileNotFoundError:
-                            pass
-                        except Exception:
-                            pass
-                        self._cache[file_path] = (art_path, art_size)
-                        self._cache.move_to_end(file_path)
-                else:
-                    # New entry
-                    self._cache[file_path] = (art_path, art_size)
-                    self._cache.move_to_end(file_path)
-                self._enforce_size_limit()
-            return True
-        except Exception as e:
-            print(f"[ArtworkCache] Error updating cache: {e}")
-            return False
-
-    def get_art(self, file_path: str, callback: Optional[Callable] = None) -> Optional[str]:
-        """Get album art for a file, with caching and priority fallback.
-
-        Extraction priority:
-        1. Cached art (check before extraction)
-        2. Embedded art (Mutagen)
-        3. Local sidecar file (folder.jpg / cover.jpg in same directory)
-        4. Web fallback (MusicBrainz/Cover Art Archive) — deferred to Slice 1.3
-
-        Args:
-            file_path: Path to audio file
-            callback: Optional callback(function) to call with result
-
-        Returns:
-            Path to cached art file, or None if no art found
-        """
-        try:
-            file_path = str(file_path)
-
-            # Skip non-existent files immediately — no cache or sidecar effects
-            if not os.path.exists(file_path):
-                self._call_callback(callback, None)
-                return None
-
-            # Check cache first — return early with MRU update if cached
-            cached_result = self._check_cache(file_path)
-            if cached_result:
-                self._call_callback(callback, cached_result)
-                return cached_result
-
-            # Per-source-path serialization to prevent concurrent extraction
-            # for the same track. Double-checked locking pattern.
-            path_lock = self._path_locks[file_path]
-            with path_lock:
-                # Re-check cache after acquiring lock (double-check)
-                cached_result = self._check_cache(file_path)
-                if cached_result:
-                    self._call_callback(callback, cached_result)
-                    return cached_result
-
-                # Extract embedded art
-                result = self._extract_embedded(file_path)
-                if result and self._cache_file(file_path, result):
-                    self._call_callback(callback, result)
-                    return result
-
-                # Check local sidecar files
-                sidecar_result = self._check_sidecar(file_path)
-                if sidecar_result and self._cache_file(file_path, sidecar_result):
-                    self._call_callback(callback, sidecar_result)
-                    return sidecar_result
-
-                # No art found — invoke callback
-                self._call_callback(callback, None)
-                return None
-
-        except Exception as e:
-            print(f"[ArtworkCache] Error processing {file_path}: {e}")
-            self._call_callback(callback, None)
-            return None
+    def _content_hash(self, file_path: str) -> str:
+        """Compute content hash for cache key consistency."""
+        with open(file_path, 'rb') as f:
+            return hashlib.content_hash(f.read())
 
     def _check_cache(self, file_path: str) -> Optional[str]:
         """Check cache for existing artwork for a given audio file.
@@ -317,10 +212,9 @@ class ArtworkCache:
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
                 # Derive unique filename from source path to prevent collisions
                 # when files in different dirs share the same stem
-                path_hash = hashlib.md5(str(filepath).encode()).hexdigest()[:12]
+                path_hash = hashlib.content_hash(str(filepath).encode())[:12]
                 cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
-                    import shutil
                     shutil.copy2(str(sidecar_path), str(cache_path))
                     return str(cache_path)
                 except Exception as e:
@@ -344,17 +238,6 @@ class ArtworkCache:
         # Determine file extension from MIME type
         if '/' in mime_type:
             ext = mime_type.split('/')[-1]
-            # Normalize common extensions
-            ext_map = {
-                'jpeg': 'jpg',
-                'png': 'png',
-                'webp': 'webp',
-                'gif': 'gif',
-                'bmp': 'bmp',
-                'tiff': 'tiff',
-                'tif': 'tiff',
-            }
-            ext = ext_map.get(ext, ext)
         else:
             ext = 'jpg'
 
@@ -398,9 +281,27 @@ class ArtworkCache:
                     print(f"[ArtworkCache] Error removing rejected cache file: {e}")
                 return False
             with self._cache_lock:
-                self._cache[file_path] = (art_path, art_size)
-                self._cache.move_to_end(file_path)  # Mark as most recently used
-            self._enforce_size_limit()
+                # Reconcile if source path already exists in cache
+                if file_path in self._cache:
+                    existing_cache_path, existing_size = self._cache[file_path]
+                    if existing_cache_path == art_path:
+                        # Same entry — just move to MRU
+                        self._cache.move_to_end(file_path)
+                    else:
+                        # Different path — remove old cached file, store new
+                        try:
+                            os.remove(existing_cache_path)
+                        except FileNotFoundError:
+                            pass
+                        except Exception:
+                            pass
+                        self._cache[file_path] = (art_path, art_size)
+                        self._cache.move_to_end(file_path)
+                else:
+                    # New entry
+                    self._cache[file_path] = (art_path, art_size)
+                    self._cache.move_to_end(file_path)
+                self._enforce_size_limit()
             return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -479,6 +380,105 @@ class ArtworkCache:
         self._worker.join(timeout=5.0)
         # Final cache enforcement
         self._enforce_size_limit()
+
+    def get_art(self, file_path: str, callback: Optional[Callable] = None) -> Optional[str]:
+        """Get album art for a file, with caching and priority fallback.
+
+        Extraction priority:
+        1. Cached art (check before extraction)
+        2. Embedded art (Mutagen)
+        3. Local sidecar file (folder.jpg / cover.jpg in same directory)
+        4. Web fallback (MusicBrainz/Cover Art Archive) — deferred to Slice 1.3
+
+        Args:
+            file_path: Path to audio file
+            callback: Optional callback(function) to call with result
+
+        Returns:
+            Path to cached art file, or None if no art found
+        """
+        try:
+            file_path = str(file_path)
+
+            # Skip non-existent files immediately — no cache or sidecar effects
+            if not os.path.exists(file_path):
+                self._call_callback(callback, None)
+                return None
+
+            # Check cache first — return early with MRU update if cached
+            cached_result = self._check_cache(file_path)
+            if cached_result:
+                self._call_callback(callback, cached_result)
+                return cached_result
+
+            # Per-source-path serialization to prevent concurrent extraction
+            # for the same track. Double-checked locking pattern.
+            path_lock = self._path_locks.get(file_path)
+            if path_lock is None:
+                with self._path_locks_lock:
+                    if file_path not in self._path_locks:
+                        self._path_locks[file_path] = threading.Lock()
+                    path_lock = self._path_locks[file_path]
+
+            with path_lock:
+                # Re-check cache after acquiring lock (double-check)
+                cached_result = self._check_cache(file_path)
+                if cached_result:
+                    self._call_callback(callback, cached_result)
+                    return cached_result
+
+                # Extract embedded art
+                result = self._extract_embedded(file_path)
+                if result and self._cache_file(file_path, result):
+                    # Call callback OUTSIDE the lock to prevent deadlock
+                    self._call_callback(callback, result)
+                    return result
+
+                # Check local sidecar files
+                sidecar_result = self._check_sidecar(file_path)
+                if sidecar_result and self._cache_file(file_path, sidecar_result):
+                    # Call callback OUTSIDE the lock to prevent deadlock
+                    self._call_callback(callback, sidecar_result)
+                    return sidecar_result
+
+                # No art found — invoke callback
+                self._call_callback(callback, None)
+                return None
+
+        except Exception as e:
+            print(f"[ArtworkCache] Error processing {file_path}: {e}")
+            self._call_callback(callback, None)
+            return None
+
+    def _get_content_hash(self, file_path: str) -> str:
+        """Compute content hash for cache key consistency."""
+        with open(file_path, 'rb') as f:
+            return hashlib.content_hash(f.read())
+
+    def _get_content_size(self, file_path: str) -> int:
+        """Get file size for cache accounting."""
+        try:
+            return os.path.getsize(file_path)
+        except Exception:
+            return 0
+
+    def _get_content_path(self, file_path: str) -> Optional[str]:
+        """Get the cached art file path for a source path, if it exists.
+
+        Returns the cached art file path if it exists and is valid,
+        or None if the cache entry is stale or missing.
+        """
+        if file_path not in self._cache:
+            return None
+        cache_path, content_size = self._cache[file_path]
+        if os.path.exists(cache_path):
+            # Move to end (most recently used)
+            self._cache.move_to_end(source_path)
+            return content_path
+        else:
+            # Stale cache entry — remove it
+            del self._cache[source_path]
+            return None
 
 
 # Convenience function for quick art retrieval

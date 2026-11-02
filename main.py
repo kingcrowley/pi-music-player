@@ -18,15 +18,22 @@ from core.artwork import ArtworkCache
 
 
 def _get_mpd_music_dir(player) -> str:
-    """Get MPD music directory from config or default."""
+    """Get MPD music directory from config or default.
+
+    Uses MPD's status command to get the music directory, as `mpc config`
+    is not supported in all MPD versions.
+    """
     try:
-        # Try to get music_directory from MPD config
+        # Try to get music_directory from MPD status output
+        # MPD status output includes 'music_directory' in some versions
         result = subprocess.run(
-            ["mpc", "config", "music_directory"],
+            ["mpc", "status"],
             capture_output=True, text=True, timeout=5
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("music_directory:"):
+                    return line.split(":", 1)[1].strip()
     except Exception:
         pass
     # Fallback to default
