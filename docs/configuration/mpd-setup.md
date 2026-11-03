@@ -47,10 +47,12 @@ Run `amixer -c <card> scontrols` to list the control names on your HAT.
 audio_output {
     type        "alsa"
     name        "USB DAC"
-    device      "hw:CARD=USB,DEV=0"
+    device      "hw:CARD=<cardname>,DEV=0"
     mixer_type  "hardware"
 }
 ```
+
+Run `aplay -l` or `cat /proc/asound/cards` to find your card name. Replace `<cardname>` with the actual card name (e.g., `USBAudio`, `DAC`, etc.). Use `aplay -l` or `cat /proc/asound/cards` to find it.
 
 ### ALSA — Generic (Plughw)
 
@@ -63,6 +65,8 @@ audio_output {
 ```
 
 ### PipeWire (Fedora 38+, Ubuntu 22.10+, Arch)
+
+**Important:** On Fedora and newer Ubuntu versions, MPD must run as a user with access to the PipeWire socket. Configure MPD to run as the desktop user or use `auto_update "no"` and manually update the database.
 
 ```ini
 audio_output {
@@ -79,6 +83,8 @@ audio_output {
     name        "PulseAudio Output"
 }
 ```
+
+**Important:** PulseAudio relies on the user's session. Ensure the `player` user is in the `pulse-access` group or run `pactl list short sinks` to verify access.
 
 ### Null Output (Headless / Testing)
 
@@ -112,7 +118,6 @@ auto_update        "no"
 database {
     plugin          "simple"
     path            "/var/lib/mpd/mpd.db"
-    cache_directory "/var/lib/mpd/cache"
 }
 
 audio_output {
@@ -139,7 +144,6 @@ auto_update        "no"
 database {
     plugin          "simple"
     path            "/var/lib/mpd/mpd.db"
-    cache_directory "/var/lib/mpd/cache"
 }
 
 audio_output {

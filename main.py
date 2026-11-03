@@ -8,7 +8,6 @@ For now: test MPD connection and album art extraction.
 import sys
 import os
 import time
-import subprocess
 
 # Ensure core package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,24 +16,22 @@ from core.player import MusicPlayer
 from core.artwork import ArtworkCache
 
 
-def _get_mpd_music_dir(player) -> str:
+def _get_mpd_music_dir() -> str:
     """Get MPD music directory from config or default.
 
-    Uses MPD's status command to get the music directory, as `mpc config`
-    is not supported in all MPD versions.
+    Reads /etc/mpd.conf directly since `mpc config` is not a valid command.
+    Falls back to default if config file is not found.
     """
     try:
-        # Try to get music_directory from MPD status output
-        # MPD status output includes 'music_directory' in some versions
-        result = subprocess.run(
-            ["mpc", "status"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if line.startswith("music_directory:"):
-                    return line.split(":", 1)[1].strip()
-    except Exception:
+        with open("/etc/mpd.conf", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("music_directory"):
+                    # Parse: music_directory "/mnt/nas/music"
+                    parts = line.split('"')
+                    if len(parts) >= 2:
+                        return parts[1]
+    except FileNotFoundError:
         pass
     # Fallback to default
     return "/mnt/nas/music"
@@ -44,17 +41,21 @@ def _resolve_song_path(song_file: str, music_dir: str) -> str:
     """Resolve a song file path against the MPD music directory.
 
     MPD returns file paths relative to the configured music_directory.
-    This function resolves them to absolute filesystem paths.
+    Stream URLs (http://, https://, etc.) are returned unchanged.
+    This function resolves relative paths to absolute filesystem paths.
 
     Args:
         song_file: Relative path from MPD (e.g., "Artist/Album/Track.flac")
         music_dir: Absolute path to MPD music directory
 
     Returns:
-        Absolute filesystem path to the audio file
+        Absolute filesystem path to the audio file, or stream URL unchanged
     """
     if not song_file:
         return ""
+    # Skip stream URLs - they should not be resolved as local paths
+    if song_file.startswith(("http://", "https://", "ftp://", "rtsp://")):
+        return song_file
     # If already absolute, return as-is
     if os.path.isabs(song_file):
         return song_file
@@ -85,7 +86,7 @@ def main():
         print(f"\nCurrent song: {song.get('artist', 'Unknown')} - {song.get('title', 'Unknown')}")
 
         # Resolve the song file path against MPD music directory
-        music_dir = _get_mpd_music_dir(player)
+        music_dir = _get_mpd_music_dir()
         abs_file_path = _resolve_song_path(song["file"], music_dir)
 
         print(f"Resolved file path: {abs_file_path}")
@@ -97,9 +98,6 @@ def main():
                 print(f"  Size: {os.path.getsize(art_path)} bytes")
             else:
                 print("No album art found for current track")
-        else:
-            print(f"File not found: {abs_file_path}")
-            print("No album art found for current track")
     else:
         print("No song currently playing")
 
