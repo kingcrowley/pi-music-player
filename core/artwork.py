@@ -450,37 +450,6 @@ class ArtworkCache:
             self._call_callback(callback, None)
             return None
 
-    def _get_content_hash(self, file_path: str) -> str:
-        """Compute content hash for cache key consistency."""
-        with open(file_path, 'rb') as f:
-            return hashlib.content_hash(f.read())
-
-    def _get_content_size(self, file_path: str) -> int:
-        """Get file size for cache accounting."""
-        try:
-            return os.path.getsize(file_path)
-        except Exception:
-            return 0
-
-    def _get_content_path(self, file_path: str) -> Optional[str]:
-        """Get the cached art file path for a source path, if it exists.
-
-        Returns the cached art file path if it exists and is valid,
-        or None if the cache entry is stale or missing.
-        """
-        if file_path not in self._cache:
-            return None
-        cache_path, content_size = self._cache[file_path]
-        if os.path.exists(cache_path):
-            # Move to end (most recently used)
-            self._cache.move_to_end(source_path)
-            return content_path
-        else:
-            # Stale cache entry — remove it
-            del self._cache[source_path]
-            return None
-
-
 # Convenience function for quick art retrieval
 def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:
     """Quick function to get album art without managing a cache instance.
