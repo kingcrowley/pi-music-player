@@ -1,5 +1,5 @@
 """
-Album Art Handler — Slice 1.2
+Album Art Handler — Slice 1.2 & 1.3
 
 Extracts embedded artwork from audio files, with caching and web fallback.
 Designed for low-RAM Linux systems (Pi Zero 2 W).
@@ -10,6 +10,7 @@ Features:
 - Background thread for network operations
 - Strict timeouts to prevent UI blocking
 - Thread-safe UI updates via callback queue
+- Web fallback via Cover Art Archive (MBID-based)
 
 Module Structure:
 - ArtworkCache class: Main interface for art retrieval
@@ -52,7 +53,7 @@ class ArtworkCache:
         _cache_lock: Lock for thread-safe cache access
         _queue: Thread-safe queue for background operations
         _worker: Background thread for processing operations
-        _path_locks: Per-source-path locks for concurrent access serialization
+        _path_locks: Per-path locks for concurrent access serialization
     """
 
     def __init__(self, max_size_mb: int = 50, cache_dir: Optional[str] = None):
@@ -72,19 +73,11 @@ class ArtworkCache:
         self._cache: OrderedDict[str, tuple] = OrderedDict()
         self._cache_lock = threading.Lock()
 
-        # Per-source-path locks for concurrent access serialization
+        # Per-path locks for concurrent access serialization
         self._path_locks: Dict[str, threading.Lock] = {}
         self._path_locks_lock = threading.Lock()
 
-        # Note: Cache scanning disabled at startup since artwork filenames
-        # use UUID-based naming (not source-path-based), so scanned keys would
-        # never match source_path keys used in _check_cache. Cache entries
-        # are populated lazily on first get_art() call instead.
-        self._worker_stop = threading.Event()
-
-        # Start background worker thread
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker.start()
+        # Operation queue for background processing
         self._queue = queue.Queue()
         self._worker_stop = threading.Event()
 
@@ -107,15 +100,15 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
-                    self._cache[content_hash] = (str(cache_file), size)
+                    cache_key = cache_file.stem
+                    self._cache[cache_key] = (str(cache_file), size)
                 except Exception:
                     pass
 
     def _content_hash(self, file_path: str) -> str:
         """Compute content hash for cache key consistency."""
         with open(file_path, 'rb') as f:
-            return hashlib.content_hash(f.read())
+            return hashlib.sha256(f.read()).hexdigest()
 
     def _check_cache(self, file_path: str) -> Optional[str]:
         """Check cache for existing artwork for a given audio file.
@@ -218,7 +211,7 @@ class ArtworkCache:
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
                 # Derive unique filename from source path to prevent collisions
                 # when files in different dirs share the same stem
-                path_hash = hashlib.sha256(str(filepath).encode()).hexdigest()[:12]
+                path_hash = hashlib.sha256(str(filepath).encode())[:12]
                 cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
                     shutil.copy2(str(sidecar_path), str(cache_path))
@@ -228,12 +221,13 @@ class ArtworkCache:
 
         return None
 
-    def _save_artwork(self, mime_type: str, art_data: bytes) -> Optional[str]:
+    def _save_artwork(self, mime_type: str, art_data: bytes, file_path: Optional[str] = None) -> Optional[str]:
         """Save extracted artwork to cache directory.
 
         Args:
             mime_type: MIME type of the artwork (e.g., "image/jpeg", "image/png")
             art_data: Raw bytes of the artwork image
+            file_path: Optional path to the source audio file (for hash-based naming)
 
         Returns:
             Path to cached art file, or None if save failed
@@ -307,8 +301,7 @@ class ArtworkCache:
                     # New entry
                     self._cache[file_path] = (art_path, art_size)
                     self._cache.move_to_end(file_path)
-            # Enforce size limit OUTSIDE the lock to avoid deadlock
-            self._enforce_size_limit()
+                self._enforce_size_limit()
             return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -395,7 +388,7 @@ class ArtworkCache:
         1. Cached art (check before extraction)
         2. Embedded art (Mutagen)
         3. Local sidecar file (folder.jpg / cover.jpg in same directory)
-        4. Web fallback (MusicBrainz/Cover Art Archive) — deferred to Slice 1.3
+        4. Web fallback (MusicBrainz/Cover Art Archive)
 
         Args:
             file_path: Path to audio file
@@ -412,6 +405,12 @@ class ArtworkCache:
                 self._call_callback(callback, None)
                 return None
 
+            # Check cache first — return early with MRU update if cached
+            cached_result = self._check_cache(file_path)
+            if cached_result:
+                self._call_callback(callback, cached_result)
+                return cached_result
+
             # Per-source-path serialization to prevent concurrent extraction
             # for the same track. Double-checked locking pattern.
             path_lock = self._path_locks.get(file_path)
@@ -425,7 +424,7 @@ class ArtworkCache:
 
             # Perform all locked operations first, then call callback outside lock
             with path_lock:
-                # Check cache first — return early with MRU update if cached
+                # Re-check cache after acquiring lock (double-check)
                 cached_result = self._check_cache(file_path)
                 if cached_result:
                     result_path = cached_result
@@ -450,6 +449,7 @@ class ArtworkCache:
             print(f"[ArtworkCache] Error processing {file_path}: {e}")
             self._call_callback(callback, None)
             return None
+
 
 # Convenience function for quick art retrieval
 def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:

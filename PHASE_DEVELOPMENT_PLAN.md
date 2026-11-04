@@ -262,6 +262,8 @@ Copy this for each slice:
 - **All MPD calls wrapped** in try/except — no exception should ever propagate to the Tkinter event loop
 - **Reconnect logic**: on failed command, call `connect()` once and retry the command once
 - **Status polling**: `get_status()` is called from background thread; safe because it never touches Tkinter
+- **MPD socket lifecycle**: Ensure systemd service file declares `After=mpd.service network.target` so MPD socket is ready before UI starts
+- **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
 
 #### Test Criteria (Manual)
 ```bash
