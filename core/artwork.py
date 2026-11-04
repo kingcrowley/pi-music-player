@@ -28,6 +28,7 @@ from typing import Optional, Callable, Dict, Any
 from collections import OrderedDict
 import hashlib
 import uuid
+import shutil
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -101,7 +102,7 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    content_hash = hashlib.content_hash(cache_file.read_bytes())
+                    content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
                     self._cache[content_hash] = (str(cache_file), size)
                 except Exception:
                     pass
@@ -135,6 +136,13 @@ class ArtworkCache:
                     # Stale cache entry — remove it
                     del self._cache[file_path]
             return None
+
+    def _get_content_size(self, file_path: str) -> int:
+        """Get file size for cache accounting."""
+        try:
+            return os.path.getsize(file_path)
+        except Exception:
+            return 0
 
     def _extract_embedded(self, file_path: str) -> Optional[str]:
         """Extract embedded artwork from audio file using Mutagen.
@@ -212,7 +220,7 @@ class ArtworkCache:
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
                 # Derive unique filename from source path to prevent collisions
                 # when files in different dirs share the same stem
-                path_hash = hashlib.content_hash(str(filepath).encode())[:12]
+                path_hash = hashlib.sha256(str(filepath).encode()).hexdigest()[:12]
                 cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
                     shutil.copy2(str(sidecar_path), str(cache_path))
@@ -301,7 +309,8 @@ class ArtworkCache:
                     # New entry
                     self._cache[file_path] = (art_path, art_size)
                     self._cache.move_to_end(file_path)
-                self._enforce_size_limit()
+            # Enforce size limit OUTSIDE the lock to avoid deadlock
+            self._enforce_size_limit()
             return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -405,12 +414,6 @@ class ArtworkCache:
                 self._call_callback(callback, None)
                 return None
 
-            # Check cache first — return early with MRU update if cached
-            cached_result = self._check_cache(file_path)
-            if cached_result:
-                self._call_callback(callback, cached_result)
-                return cached_result
-
             # Per-source-path serialization to prevent concurrent extraction
             # for the same track. Double-checked locking pattern.
             path_lock = self._path_locks.get(file_path)
@@ -420,30 +423,30 @@ class ArtworkCache:
                         self._path_locks[file_path] = threading.Lock()
                     path_lock = self._path_locks[file_path]
 
+            result_path = None
+
+            # Perform all locked operations first, then call callback outside lock
             with path_lock:
-                # Re-check cache after acquiring lock (double-check)
+                # Check cache first — return early with MRU update if cached
                 cached_result = self._check_cache(file_path)
                 if cached_result:
-                    self._call_callback(callback, cached_result)
-                    return cached_result
+                    result_path = cached_result
 
-                # Extract embedded art
-                result = self._extract_embedded(file_path)
-                if result and self._cache_file(file_path, result):
-                    # Call callback OUTSIDE the lock to prevent deadlock
-                    self._call_callback(callback, result)
-                    return result
+                # Extract embedded art if not cached
+                if result_path is None:
+                    result = self._extract_embedded(file_path)
+                    if result and self._cache_file(file_path, result):
+                        result_path = result
 
-                # Check local sidecar files
-                sidecar_result = self._check_sidecar(file_path)
-                if sidecar_result and self._cache_file(file_path, sidecar_result):
-                    # Call callback OUTSIDE the lock to prevent deadlock
-                    self._call_callback(callback, sidecar_result)
-                    return sidecar_result
+                    # Check local sidecar files
+                    if result_path is None:
+                        sidecar_result = self._check_sidecar(file_path)
+                        if sidecar_result and self._cache_file(file_path, sidecar_result):
+                            result_path = sidecar_result
 
-                # No art found — invoke callback
-                self._call_callback(callback, None)
-                return None
+            # Call callback OUTSIDE the lock to prevent deadlock
+            self._call_callback(callback, result_path)
+            return result_path
 
         except Exception as e:
             print(f"[ArtworkCache] Error processing {file_path}: {e}")
