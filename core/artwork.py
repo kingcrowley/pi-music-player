@@ -142,13 +142,6 @@ class ArtworkCache:
                     del self._cache[file_path]
             return None
 
-    def _get_content_size(self, file_path: str) -> int:
-        """Get file size for cache accounting."""
-        try:
-            return os.path.getsize(file_path)
-        except Exception:
-            return 0
-
     def _extract_embedded(self, file_path: str) -> Optional[str]:
         """Extract embedded artwork from audio file using Mutagen.
 
