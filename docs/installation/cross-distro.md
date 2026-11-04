@@ -12,7 +12,45 @@ Instructions for installing the music player on various Linux distributions.
 
 ```bash
 sudo apt update
-sudo apt install -y mpd python3 python3-pip python3-tk cifs-utils nfs-common
+sudo apt install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-common
+```
+
+### Fix: Create MPD data directories and user
+
+```bash
+# Create the player user (no -d flag needed)
+sudo useradd -r -s /bin/false player
+
+# Add player to audio group for sound device access
+sudo usermod -aG audio player
+
+# Create the MPD data directories
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
+
+# Set ownership - MPD service runs as 'player' user
+sudo chown -R player:player /var/lib/mpd /var/log/mpd
+
+# Set proper permissions
+sudo chmod 755 /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
+```
+
+### Fix: Create MPD data directories and user
+
+```bash
+# Create the player user (no -d flag needed)
+sudo useradd -r -s /bin/false player
+
+# Add player to audio group for sound device access
+sudo usermod -aG audio player
+
+# Create the MPD data directories
+sudo mkdir -p /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
+
+# Set ownership
+sudo chown -R player:player /var/lib/mpd /var/log/mpd
+
+# Set proper permissions
+sudo chmod 755 /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/mpd
 ```
 
 ### 2. Python Dependencies
@@ -36,7 +74,7 @@ python3 main.py
 ### 1. System Dependencies
 
 ```bash
-sudo dnf install -y mpd python3 python3-pip python3-tk cifs-utils nfs-utils
+sudo dnf install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-utils
 ```
 
 ### 2. Python Dependencies
@@ -253,7 +291,8 @@ nas-ip:/music /mnt/nas/music nfs defaults,vers=4.1,hard,intr 0 0
 Test:
 
 ```bash
-sudo mount -a
+sudo umount /mnt/nas/music 2>/dev/null || true
+sudo mount /mnt/nas/music
 ls /mnt/nas/music/
 ```
 

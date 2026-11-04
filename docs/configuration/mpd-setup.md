@@ -2,185 +2,157 @@
 
 Configuration options for MPD (Music Player Daemon) by audio backend.
 
-> **Important:** MPD talks to audio hardware directly. The Python app never touches ALSA/PipeWire/PulseAudio. `core/system.py` generates the correct `audio_output` block for your detected backend.
+> **Important:** MPD talks to audio hardware directly. The Python app never touches ALSA/PipeWire/PulseAudio.
+
+> **Warning:** Replace the entire `/etc/mpd.conf` — do not append to the stock config. Debian's default config already contains `music_directory`, `database {}`, `bind_to_address`, and other settings that will conflict.
 
 ---
 
 ## Audio Output Configuration
 
-### ALSA (Default on Raspberry Pi OS, Alpine, Debian)
+### ALSA — Raspberry Pi Zero 2 W (HDMI)
 
-`/etc/mpd.conf`:
+**Note:** Pi Zero 2 W has **no** 3.5mm jack. Use HDMI, I²S DAC HAT, or USB DAC.
 
 ```ini
 audio_output {
-    type "alsa"
-    name "Pi Audio"
-    device "hw:0,0"          # 3.5mm jack
-    # device "hw:0,1"        # HDMI
-    # device "hw:CARD=HAT,DEV=0"  # USB DAC HAT
-    mixer_type "hardware"
-    mixer_device "PCM"
-    mixer_control "PCM"
+    type        "alsa"
+    name        "Pi HDMI"
+    device      "hdmi:CARD=vc4hdmi,DEV=0"
+    mixer_type  "software"
 }
 ```
 
-Available ALSA devices:
+- `vc4hdmi` has no hardware mixer — use `mixer_type "software"`
+- Plain `hw:` usually fails with a format error on `vc4hdmi`
+- Use `hdmi:CARD=vc4hdmi,DEV=0` or `plughw:`
 
-```bash
-aplay -l
-aplay -L
-```
-
-### PipeWire (Default on Fedora, Ubuntu 22.10+, Arch)
-
-`/etc/mpd.conf`:
+### ALSA — I²S DAC HAT
 
 ```ini
 audio_output {
-    type "pipewire"
-    name "PipeWire Output"
+    type        "alsa"
+    name        "DAC HAT"
+    device      "hw:CARD=<cardname>,DEV=0"
+    mixer_type  "hardware"
+    mixer_control "<control name>"
+}
+```
+
+Run `amixer -c <card> scontrols` to list the control names on your HAT.
+
+### ALSA — USB DAC
+
+```ini
+audio_output {
+    type        "alsa"
+    name        "USB DAC"
+    device      "hw:CARD=<cardname>,DEV=0"
+    mixer_type  "hardware"
+}
+```
+
+Run `aplay -l` or `cat /proc/asound/cards` to find your card name. Replace `<cardname>` with the actual card name (e.g., `USBAudio`, `DAC`, etc.). Use `aplay -l` or `cat /proc/asound/cards` to find it.
+
+### ALSA — Generic (Plughw)
+
+```ini
+audio_output {
+    type        "alsa"
+    name        "Generic"
+    device      "plughw:0,0"
+}
+```
+
+### PipeWire (Fedora 38+, Ubuntu 22.10+, Arch)
+
+**Important:** On Fedora and newer Ubuntu versions, MPD must run as a user with access to the PipeWire socket. Configure MPD to run as the desktop user or use `auto_update "no"` and manually update the database.
+
+```ini
+audio_output {
+    type        "pipewire"
+    name        "PipeWire Output"
 }
 ```
 
 ### PulseAudio (Older Ubuntu, Debian)
 
-`/etc/mpd.conf`:
-
 ```ini
 audio_output {
-    type "pulse"
-    name "PulseAudio Output"
+    type        "pulse"
+    name        "PulseAudio Output"
 }
 ```
+
+**Important:** PulseAudio relies on the user's session. Ensure the `player` user is in the `pulse-access` group or run `pactl list short sinks` to verify access.
 
 ### Null Output (Headless / Testing)
 
-`/etc/mpd.conf`:
-
 ```ini
 audio_output {
-    type "null"
-    name "Null Output"
+    type        "null"
+    name        "Null Output"
 }
 ```
 
 ---
 
-## General MPD Configuration
+## Complete MPD Config Template
 
-### Minimal Working Config
+### Raspberry Pi Zero 2 W (HDMI)
 
 ```ini
-# Audio output
-audio_output {
-    type "alsa"
-    name "Music Player"
-    device "hw:0,0"
-    mixer_type "hardware"
-    mixer_control "PCM"
-}
+music_directory    "/mnt/nas/music"
+playlist_directory "/var/lib/mpd/playlists"
+state_file         "/var/lib/mpd/state"
+sticker_file       "/var/lib/mpd/sticker.sql"
+log_file           "syslog"
+user               "player"
+bind_to_address    "127.0.0.1"
+port               "6600"
 
-# Music library
-music_directory "/mnt/nas/music"
+# inotify does NOT work on SMB/NFS mounts — set to "no"
+# Use `mpc update` manually instead
+auto_update        "no"
+
 database {
-    path "/var/lib/mpd/mpd.db"
-    auto_update "yes"
+    plugin          "simple"
+    path            "/var/lib/mpd/mpd.db"
 }
 
-# Cache
-cache_directory "/var/lib/mpd/cache"
-cache_size "1024"
-
-# Network
-bind_to_address "127.0.0.1"
-port "6600"
-
-# Security
-user "player"
-```
-
-### Security Hardening
-
-```ini
-# Bind only to localhost (no network access to MPD port)
-bind_to_address "127.0.0.1"
-port "6600"
-
-# Run as unprivileged user
-user "player"
-
-# File permissions
-directory_mode "0755"
-default_permissions "read"
-```
-
-### Performance Tuning
-
-```ini
-# Larger cache for faster library operations
-cache_size "2048"
-
-# Auto-update database when files change
-auto_update "yes"
-
-# Follow symlinks
-follow_symlinks "yes"
-```
-
----
-
-## Complete Template Examples
-
-### Raspberry Pi OS (ALSA, 3.5mm Jack)
-
-```ini
 audio_output {
-    type "alsa"
-    name "Pi Audio"
-    device "hw:0,0"
-    mixer_type "hardware"
-    mixer_device "PCM"
-    mixer_control "PCM"
-}
-
-music_directory "/mnt/nas/music"
-database { path "/var/lib/mpd/mpd.db"; auto_update "yes"; }
-cache_directory "/var/lib/mpd/cache"
-cache_size "1024"
-
-bind_to_address "127.0.0.1"
-port "6600"
-user "player"
-```
-
-### Raspberry Pi OS (HDMI Audio)
-
-```ini
-audio_output {
-    type "alsa"
-    name "Pi HDMI"
-    device "hw:0,1"
-    mixer_type "software"
+    type        "alsa"
+    name        "Pi HDMI"
+    device      "hdmi:CARD=vc4hdmi,DEV=0"
+    mixer_type  "software"
 }
 ```
 
-### Fedora (PipeWire)
+### Raspberry Pi Zero 2 W (I²S DAC HAT)
 
 ```ini
-audio_output {
-    type "pipewire"
-    name "PipeWire Output"
+music_directory    "/mnt/nas/music"
+playlist_directory "/var/lib/mpd/playlists"
+state_file         "/var/lib/mpd/state"
+sticker_file       "/var/lib/mpd/sticker.sql"
+log_file           "syslog"
+user               "player"
+bind_to_address    "127.0.0.1"
+port               "6600"
+auto_update        "no"
+
+database {
+    plugin          "simple"
+    path            "/var/lib/mpd/mpd.db"
 }
 
-music_directory "/mnt/nas/music"
-database { path "/var/lib/mpd/mpd.db"; auto_update "yes"; }
-cache_directory "/var/lib/mpd/cache"
-cache_size "1024"
-
-bind_to_address "127.0.0.1"
-port "6600"
-user "player"
+audio_output {
+    type        "alsa"
+    name        "DAC HAT"
+    device      "hw:CARD=<cardname>,DEV=0"
+    mixer_type  "hardware"
+    mixer_control "<control name>"
+}
 ```
 
 ---
@@ -188,11 +160,11 @@ user "player"
 ## Testing MPD Configuration
 
 ```bash
-# Check MPD config syntax
-mpd --stdout --no-daemon --verbose
+# Check MPD config syntax (mpd --stdout is deprecated, use --stderr)
+mpd --stderr --no-daemon --verbose
 
 # Check MPD is listening
-netstat -tlnp | grep 6600
+ss -tlnp | grep 6600
 
 # Test connection
 mpc ping
@@ -200,8 +172,9 @@ mpc ping
 # Check status
 mpc status
 
-# Add test music
-mpc add /mnt/nas/music/test.flac
+# Add test music (use relative path from music_directory)
+mpc update
+mpc add artist/album/track.flac
 mpc play
 ```
 
@@ -214,12 +187,22 @@ mpc play
 - Verify `aplay -l` lists your device
 - Check user `player` has audio group membership: `sudo usermod -aG audio player`
 - Try `mixer_type "software"` instead of `"hardware"`
+- Use `hdmi:CARD=vc4hdmi,DEV=0` or `plughw:` instead of `hw:0,0`
 
 ### "Permission denied" on music directory
 
 ```bash
-sudo chown -R player:player /mnt/nas/music
-sudo chmod -R 755 /mnt/nas/music
+# On CIFS mounts, ownership comes from uid=/gid= mount options, not chown
+# Edit /etc/fstab: uid=player,gid=player
+sudo mount -a
+```
+
+### "Address already in use" (port 6600)
+
+```bash
+# MPD's systemd socket binds port 6600 — disable it
+sudo systemctl disable --now mpd.socket
+sudo systemctl restart mpd
 ```
 
 ### MPD won't start
@@ -228,3 +211,19 @@ sudo chmod -R 755 /mnt/nas/music
 sudo systemctl status mpd
 sudo journalctl -u mpd -f
 ```
+
+### "unrecognised parameter cache_directory"
+
+This MPD version does not support `cache_directory`. Remove it from your config.
+
+### "unrecognised parameter cache_size"
+
+`cache_size` requires `cache_directory`. Remove both.
+
+### "auto_update is in the wrong place"
+
+`auto_update` is a top-level setting, not inside `database {}`.
+
+### "database {} block conflicts with db_file"
+
+Replace the entire `/etc/mpd.conf` — do not append to the stock config.
