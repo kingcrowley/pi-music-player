@@ -76,10 +76,15 @@ class ArtworkCache:
         self._path_locks: Dict[str, threading.Lock] = {}
         self._path_locks_lock = threading.Lock()
 
-        # Initialize cache from existing files
-        self._scan_existing_cache()
+        # Note: Cache scanning disabled at startup since artwork filenames
+        # use UUID-based naming (not source-path-based), so scanned keys would
+        # never match source_path keys used in _check_cache. Cache entries
+        # are populated lazily on first get_art() call instead.
+        self._worker_stop = threading.Event()
 
-        # Operation queue for background processing
+        # Start background worker thread
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
         self._queue = queue.Queue()
         self._worker_stop = threading.Event()
 
