@@ -30,6 +30,9 @@ from collections import OrderedDict
 import hashlib
 import uuid
 import shutil
+import json
+import urllib.request
+import urllib.error
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -77,6 +80,9 @@ class ArtworkCache:
         self._path_locks: Dict[str, threading.Lock] = {}
         self._path_locks_lock = threading.Lock()
 
+        # Initialize cache from existing files
+        self._scan_existing_cache()
+
         # Operation queue for background processing
         self._queue = queue.Queue()
         self._worker_stop = threading.Event()
@@ -100,6 +106,7 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
+                    # Use cache filename stem as key for consistency
                     cache_key = cache_file.stem
                     self._cache[cache_key] = (str(cache_file), size)
                 except Exception:
@@ -107,8 +114,7 @@ class ArtworkCache:
 
     def _content_hash(self, file_path: str) -> str:
         """Compute content hash for cache key consistency."""
-        with open(file_path, 'rb') as f:
-            return hashlib.sha256(f.read()).hexdigest()
+        return hashlib.sha256(file_path.encode()).hexdigest()
 
     def _check_cache(self, file_path: str) -> Optional[str]:
         """Check cache for existing artwork for a given audio file.
@@ -221,13 +227,12 @@ class ArtworkCache:
 
         return None
 
-    def _save_artwork(self, mime_type: str, art_data: bytes, file_path: Optional[str] = None) -> Optional[str]:
+    def _save_artwork(self, mime_type: str, art_data: bytes) -> Optional[str]:
         """Save extracted artwork to cache directory.
 
         Args:
             mime_type: MIME type of the artwork (e.g., "image/jpeg", "image/png")
             art_data: Raw bytes of the artwork image
-            file_path: Optional path to the source audio file (for hash-based naming)
 
         Returns:
             Path to cached art file, or None if save failed
@@ -388,7 +393,7 @@ class ArtworkCache:
         1. Cached art (check before extraction)
         2. Embedded art (Mutagen)
         3. Local sidecar file (folder.jpg / cover.jpg in same directory)
-        4. Web fallback (MusicBrainz/Cover Art Archive)
+        4. Web fallback (MusicBrainz/Cover Art Archive) — Slice 1.3
 
         Args:
             file_path: Path to audio file
@@ -441,6 +446,13 @@ class ArtworkCache:
                         if sidecar_result and self._cache_file(file_path, sidecar_result):
                             result_path = sidecar_result
 
+                # Web fallback if still no art found (Slice 1.3)
+                if result_path is None:
+                    web_result = self.get_web_art(file_path)
+                    if web_result:
+                        self._cache_file(file_path, web_result)
+                        result_path = web_path
+
             # Call callback OUTSIDE the lock to prevent deadlock
             self._call_callback(callback, result_path)
             return result_path
@@ -450,21 +462,144 @@ class ArtworkCache:
             self._call_callback(callback, None)
             return None
 
+    def _get_content_hash(self, file_path: str) -> str:
+        """Compute content hash for cache key consistency."""
+        with open(file_path, 'rb') as f:
+            return hashlib.sha256(f.read()).hexdigest()
 
-# Convenience function for quick art retrieval
-def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:
-    """Quick function to get album art without managing a cache instance.
+    def _get_content_size(self, file_path: str) -> int:
+        """Get file size for cache accounting."""
+        try:
+            return os.path.getsize(file_path)
+        except Exception:
+            return 0
 
-    Args:
-        file_path: Path to audio file
-        max_size_mb: Maximum cache size in megabytes
-        cache_dir: Optional directory for storing cached art files
+    def _get_content_path(self, file_path: str) -> Optional[str]:
+        """Get the cached art file path for a source path, if it exists.
 
-    Returns:
-        Path to cached art file, or None if no art found
-    """
-    cache = ArtworkCache(max_size_mb=max_size_mb, cache_dir=cache_dir)
-    try:
-        return cache.get_art(file_path)
-    finally:
-        cache.close()
+        Returns the cached art file path if it exists and is valid,
+        or None if the cache entry is stale or missing.
+        """
+        if file_path not in self._cache:
+            return None
+        cache_path, content_size = self._cache[file_path]
+        if os.path.exists(cache_path):
+            # Move to end (most recently used)
+            self._cache.move_to_end(file_path)
+            return content_path
+        else:
+            # Stale cache entry — remove it
+            del self._cache[file_path]
+            return None
+
+    def _get_web_art(self, file_path: str) -> Optional[str]:
+        """Fetch album art via MusicBrainz Release ID (MBID) + Cover Art Archive.
+
+        This is Step 1 of Slice 1.3 — the web fallback chain:
+        1. Extract MBID from audio file metadata (FLAC/MBID tags)
+        2. Query Cover Art Archive API for release art
+        3. Download and cache the artwork
+        4. Return path to cached art file
+
+        Args:
+            file_path: Path to audio file
+
+        Returns:
+            Path to cached art file, or None if web fetch fails
+        """
+        try:
+            file_path = str(file_path)
+
+            # Step 1: Resolve MusicBrainz Release ID (MBID)
+            mbid = self._resolve_mbid(file_path)
+            if not mbid:
+                return None
+
+            # Step 2: Query Cover Art Archive
+            image_data = self._fetch_cover_art_archive(mbid)
+            if not art_data:
+                return None
+
+            # Step 3: Cache and return
+            cache_path = self._save_artwork(image_data)
+            if cache_path:
+                self._cache_file(file_path, cache_path)
+                return cache_path
+
+            return None
+
+        except Exception as e:
+            print(f"[ArtworkCache] Web fallback error: {e}")
+            return None
+
+    def _resolve_mbid(self, file_path: str) -> Optional[str]:
+        """Resolve MusicBrainz Release ID (MBID) from audio file tags.
+
+        Supports:
+        - FLAC: musicbrainz_releaseid VorbisComment
+        - MP3: TXXX:MusicBrainz Release ID
+        - M4A: iTunes 'musicbrainz_releaseid' tag
+
+        Args:
+            file_path: Path to audio file
+
+        Returns:
+            MusicBrainz Release ID string, or None if not found
+        """
+        filepath = Path(file_path)
+
+        try:
+            if filepath.suffix.lower() == '.flac':
+                audio = FLAC(file_path)
+                if 'musicbrainz_releaseid' in audio:
+                    return audio['musicbrainz_releaseid'][0]
+            elif filepath.suffix.lower() == '.mp3':
+                id3 = ID3(file_path)
+                apic_frames = id3.getall('APIC')
+                if apic_frames:
+                    apic = apic_frames[0]
+                    return self._save_artwork(apic.mime, apic.data)
+                except Exception:
+                    pass
+
+            # Try M4A/M4B
+            elif filepath.suffix.lower() in ['.m4a', '.m4b']:
+                try:
+                    audio = MP3(file_path)  # Fallback
+                    # M4A handling would need mutagen.mp4
+                    # For now, skip to next format
+                    pass
+                except Exception:
+                    pass
+
+            return None
+
+        except Exception as e:
+            print(f"[ArtworkCache] Error extracting MBID from {file_path}: {e}")
+            return None
+
+    def _fetch_cover_art_archive(self, mbid: str) -> Optional[bytes]:
+        """Fetch album art from Cover Art Archive using MusicBrainz Release ID.
+
+        Args:
+            mbid: MusicBrainz Release ID
+
+        Returns:
+            Image bytes, or None if fetch fails
+        """
+        url = f"https://coverartarchive.org/release/{mbid}"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
+            with urllib.request.urlopen(req, timeout=3.5) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    images = data.get('images', [])
+                    if images:
+                        thumbnail_url = images[0].get('thumbnails', {}).get('small')
+                        if thumbnail_url:
+                            req = urllib.request.Request(thumbnail_url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
+                            with urllib.request.urlopen(req, timeout=3.5) as img_response:
+                                return img_response.read()
+        except Exception as e:
+            print(f"[ArtworkCache] Cover Art Archive error for MBID {mbid}: {e}")
+            return None
