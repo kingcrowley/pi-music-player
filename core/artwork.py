@@ -25,7 +25,7 @@ import time
 import threading
 import queue
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, Tuple
 from collections import OrderedDict
 import hashlib
 import uuid
@@ -33,6 +33,20 @@ import shutil
 import json
 import urllib.request
 import urllib.error
+
+# Trusted HTTPS hosts for Cover Art Archive thumbnails — prevents SSRF via
+# attacker-controlled redirect targets. Only these hosts are allowed.
+_TRUSTED_ART_HOSTS = {
+    'coverartarchive.org',
+    'www.coverartarchive.org',
+    'archive.org',
+    'ia600000.us.archive.org',
+    'ia800000.us.archive.org',
+    'ia900000.us.archive.org',
+    'ia1000000.us.archive.org',
+    'uploads.tomboy.cz',
+    'img.discogs.com',
+}
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -75,24 +89,28 @@ class ArtworkCache:
         _queue: Thread-safe queue for background operations
         _worker: Background thread for processing operations
         _path_locks: Per-path locks for concurrent access serialization
+        _test_mode: Disable network calls for testing
     """
 
-    def __init__(self, max_size_mb: int = 50, cache_dir: Optional[str] = None):
+    def __init__(self, max_size_mb: int = 50, cache_dir: Optional[str] = None, test_mode: bool = False):
         """Initialize the artwork cache.
 
         Args:
             max_size_mb: Maximum total cache size in megabytes (default: 50)
             cache_dir: Directory for storing cached art files.
                        Defaults to ~/.cache/pi-music-player/artwork
+            test_mode: Disable network calls for testing (default: False)
         """
         self.max_size_mb = max_size_mb
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "pi-music-player" / "artwork"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.test_mode = test_mode
 
         # OrderedDict: source_path -> (cache_path, file_size_in_bytes)
         # Ordered by access (most recently used last)
         self._cache: OrderedDict[str, tuple] = OrderedDict()
-        self._cache_lock = threading.Lock()
+        # RLock: reentrant — _cache_file and _enforce_size_limit both acquire it
+        self._cache_lock = threading.RLock()
 
         # Per-path locks for concurrent access serialization
         self._path_locks: Dict[str, threading.Lock] = {}
@@ -116,6 +134,10 @@ class ArtworkCache:
         found on disk from previous runs. Called before the worker
         thread starts so existing cache entries are available
         immediately.
+
+        Note: Scanned files use content hash as key. Since we don't know
+        the original source audio file path, these are tracked for size
+        accounting only (eviction). Actual lookups use source file_path.
         """
         if not self.cache_dir.exists():
             return
@@ -124,9 +146,10 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    # Use content hash as key for consistency with _check_cache
+                    # Use content hash as key for scanned orphan files
+                    # These can be evicted but won't match _check_cache lookups
                     content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
-                    self._cache[content_hash] = (str(cache_file), size)
+                    self._cache[f"scanned:{content_hash}"] = (str(cache_file), size)
                 except Exception:
                     pass
 
@@ -324,10 +347,9 @@ class ArtworkCache:
                     # New entry
                     self._cache[file_path] = (art_path, art_size)
                     self._cache.move_to_end(file_path)
-                # Release lock before enforcing size limit to avoid deadlock
-                self._cache_lock.release()
+                # Enforce size limit inside same lock acquisition to avoid
+                # fragile release/re-acquire in a non-reentrant lock
                 self._enforce_size_limit()
-                self._cache_lock.acquire()
             return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -536,18 +558,17 @@ class ArtworkCache:
             if not mbid:
                 return None
 
-            # Step 2: Query Cover Art Archive
-            image_data = self._fetch_cover_art_archive(mbid)
-            if not image_data:
+            # Step 2: Query Cover Art Archive (already caches internally)
+            result = self._fetch_cover_art_archive(mbid)
+            if result is None:
                 return None
 
-            # Step 3: Cache and return
-            cache_path = self._save_artwork('image/jpeg', image_data)
-            if cache_path:
-                self._cache_file(file_path, cache_path)
-                return cache_path
-
-            return None
+            # Step 3: Return cached path
+            cache_path, _mime_type = result
+            # Cache the result from the web fetch (has already been cached by _fetch_cover_art_archive)
+            # But ensure it's in the cache for the original file path
+            self._cache_file(file_path, cache_path)
+            return cache_path
 
         except Exception as e:
             print(f"[ArtworkCache] Web fallback error: {e}")
@@ -558,8 +579,13 @@ class ArtworkCache:
 
         Supports:
         - FLAC: musicbrainz_releaseid VorbisComment
-        - MP3: TXXX:MusicBrainz Release ID
+        - MP3: TXXX:MusicBrainz Release ID (or Picard's musicbrainz_albumid)
         - M4A: iTunes 'musicbrainz_releaseid' tag
+
+        MusicBrainz Picard commonly writes the release ID as
+        `musicbrainz_albumid` in TXXX frames across all formats. This handler
+        checks for both the explicit `MusicBrainz Release ID`/`musicbrainz_releaseid`
+        tags and Picard's `musicbrainz_albumid` alias.
 
         Args:
             file_path: Path to audio file
@@ -574,8 +600,10 @@ class ArtworkCache:
             if filepath.suffix.lower() == '.flac':
                 try:
                     audio = FLAC(file_path)
-                    if 'musicbrainz_releaseid' in audio:
-                        return audio['musicbrainz_releaseid'][0]
+                    # Check explicit tag first, then Picard alias
+                    for key in ['musicbrainz_releaseid', 'musicbrainz_albumid']:
+                        if key in audio:
+                            return audio[key][0]
                 except Exception:
                     pass
 
@@ -584,7 +612,8 @@ class ArtworkCache:
                 try:
                     id3 = ID3(file_path)
                     for frame in id3.getall('TXXX'):
-                        if frame.desc == 'MusicBrainz Release ID':
+                        # Match both 'MusicBrainz Release ID' and Picard's 'musicbrainz_albumid'
+                        if frame.desc in ('MusicBrainz Release ID', 'musicbrainz_albumid'):
                             return frame.text[0]
                 except Exception:
                     pass
@@ -594,8 +623,13 @@ class ArtworkCache:
                 try:
                     from mutagen.mp4 import MP4
                     audio = MP4(file_path)
-                    if '----:com.apple.iTunes:musicbrainz_releaseid' in audio:
-                        return audio['----:com.apple.iTunes:musicbrainz_releaseid'][0].decode('utf-8')
+                    # Check iTunes key first, then Picard alias
+                    for key in ['----:com.apple.iTunes:musicbrainz_releaseid', 'musicbrainz_albumid']:
+                        if key in audio:
+                            val = audio[key][0]
+                            if isinstance(val, bytes):
+                                return val.decode('utf-8')
+                            return val
                 except Exception:
                     pass
 
@@ -605,15 +639,24 @@ class ArtworkCache:
             print(f"[ArtworkCache] Error extracting MBID from {file_path}: {e}")
             return None
 
-    def _fetch_cover_art_archive(self, mbid: str) -> Optional[bytes]:
+    def _fetch_cover_art_archive(self, mbid: str) -> Optional[Tuple[str, str]]:
         """Fetch album art from Cover Art Archive using MusicBrainz Release ID.
+
+        Uses HTTPS only and validates every redirect target against a
+        trusted host allowlist to prevent SSRF via attacker-controlled
+        redirect targets.
 
         Args:
             mbid: MusicBrainz Release ID
 
         Returns:
-            Image bytes, or None if fetch fails
+            Tuple of (cached_art_path, mime_type), or None if fetch fails
         """
+        if self.test_mode:
+            # Skip network in test mode — return None so caller knows no web art
+            print(f"[ArtworkCache] Cover Art Archive skipped (test mode) for MBID {mbid}")
+            return None
+
         url = f"https://coverartarchive.org/release/{mbid}"
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
@@ -624,12 +667,40 @@ class ArtworkCache:
                     if images:
                         thumbnail_url = images[0].get('thumbnails', {}).get('small')
                         if thumbnail_url:
-                            # Prepend base URL if relative
-                            if not thumbnail_url.startswith('http'):
-                                thumbnail_url = f"https://coverartarchive.org{thumbnail_url}"
+                            # Upgrade to HTTPS and validate host
+                            if not thumbnail_url.startswith('https://'):
+                                thumbnail_url = thumbnail_url.replace('http://', 'https://', 1)
+                            if not self._is_trusted_host(thumbnail_url):
+                                print(f"[ArtworkCache] Rejected untrusted thumbnail host: {thumbnail_url}")
+                                return None
                             req = urllib.request.Request(thumbnail_url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
                             with urllib.request.urlopen(req, timeout=3.5) as img_response:
-                                return img_response.read()
+                                image_data = img_response.read()
+                                mime_type = img_response.headers.get('Content-Type', 'image/jpeg')
+                                cache_path = self._save_artwork(mime_type, image_data)
+                                if cache_path:
+                                    self._cache_file(self._mbid_source_path, cache_path)
+                                    return cache_path, mime_type
         except Exception as e:
             print(f"[ArtworkCache] Cover Art Archive error for MBID {mbid}: {e}")
             return None
+
+    def _is_trusted_host(self, url: str) -> bool:
+        """Validate that a URL's host is in the trusted allowlist.
+
+        Args:
+            url: Full URL to validate
+
+        Returns:
+            True if the host is trusted, False otherwise
+        """
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).hostname
+            if not host:
+                return False
+            # Strip port if present
+            host = host.split(':')[0].lower()
+            return host in _TRUSTED_ART_HOSTS
+        except Exception:
+            return False
