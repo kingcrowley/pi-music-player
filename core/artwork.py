@@ -41,6 +41,24 @@ from mutagen.easyid3 import EasyID3
 from PIL import Image
 
 
+def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:
+    """Convenience function to get album art for a file.
+
+    Args:
+        file_path: Path to audio file
+        max_size_mb: Maximum cache size in megabytes
+        cache_dir: Directory for storing cached art
+
+    Returns:
+        Path to cached art file, or None if no art found
+    """
+    cache = ArtworkCache(max_size_mb=max_size_mb, cache_dir=cache_dir)
+    try:
+        return cache.get_art(file_path)
+    finally:
+        cache.close()
+
+
 class ArtworkCache:
     """Manages album art caching with size limits and thread safety.
 
@@ -106,9 +124,9 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    # Use cache filename stem as key for consistency
-                    cache_key = cache_file.stem
-                    self._cache[cache_key] = (str(cache_file), size)
+                    # Use content hash as key for consistency with _check_cache
+                    content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
+                    self._cache[content_hash] = (str(cache_file), size)
                 except Exception:
                     pass
 
@@ -217,7 +235,7 @@ class ArtworkCache:
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
                 # Derive unique filename from source path to prevent collisions
                 # when files in different dirs share the same stem
-                path_hash = hashlib.sha256(str(filepath).encode())[:12]
+                path_hash = hashlib.sha256(str(filepath).encode()).hexdigest()[:12]
                 cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
                     shutil.copy2(str(sidecar_path), str(cache_path))
@@ -306,7 +324,10 @@ class ArtworkCache:
                     # New entry
                     self._cache[file_path] = (art_path, art_size)
                     self._cache.move_to_end(file_path)
+                # Release lock before enforcing size limit to avoid deadlock
+                self._cache_lock.release()
                 self._enforce_size_limit()
+                self._cache_lock.acquire()
             return True
         except Exception as e:
             print(f"[ArtworkCache] Error updating cache: {e}")
@@ -448,10 +469,10 @@ class ArtworkCache:
 
                 # Web fallback if still no art found (Slice 1.3)
                 if result_path is None:
-                    web_result = self.get_web_art(file_path)
+                    web_result = self._get_web_art(file_path)
                     if web_result:
                         self._cache_file(file_path, web_result)
-                        result_path = web_path
+                        result_path = web_result
 
             # Call callback OUTSIDE the lock to prevent deadlock
             self._call_callback(callback, result_path)
@@ -486,7 +507,7 @@ class ArtworkCache:
         if os.path.exists(cache_path):
             # Move to end (most recently used)
             self._cache.move_to_end(file_path)
-            return content_path
+            return cache_path
         else:
             # Stale cache entry — remove it
             del self._cache[file_path]
@@ -517,11 +538,11 @@ class ArtworkCache:
 
             # Step 2: Query Cover Art Archive
             image_data = self._fetch_cover_art_archive(mbid)
-            if not art_data:
+            if not image_data:
                 return None
 
             # Step 3: Cache and return
-            cache_path = self._save_artwork(image_data)
+            cache_path = self._save_artwork('image/jpeg', image_data)
             if cache_path:
                 self._cache_file(file_path, cache_path)
                 return cache_path
@@ -549,26 +570,32 @@ class ArtworkCache:
         filepath = Path(file_path)
 
         try:
+            # Try FLAC first
             if filepath.suffix.lower() == '.flac':
-                audio = FLAC(file_path)
-                if 'musicbrainz_releaseid' in audio:
-                    return audio['musicbrainz_releaseid'][0]
+                try:
+                    audio = FLAC(file_path)
+                    if 'musicbrainz_releaseid' in audio:
+                        return audio['musicbrainz_releaseid'][0]
+                except Exception:
+                    pass
+
+            # Try MP3 using ID3 TXXX frames
             elif filepath.suffix.lower() == '.mp3':
-                id3 = ID3(file_path)
-                apic_frames = id3.getall('APIC')
-                if apic_frames:
-                    apic = apic_frames[0]
-                    return self._save_artwork(apic.mime, apic.data)
+                try:
+                    id3 = ID3(file_path)
+                    for frame in id3.getall('TXXX'):
+                        if frame.desc == 'MusicBrainz Release ID':
+                            return frame.text[0]
                 except Exception:
                     pass
 
             # Try M4A/M4B
             elif filepath.suffix.lower() in ['.m4a', '.m4b']:
                 try:
-                    audio = MP3(file_path)  # Fallback
-                    # M4A handling would need mutagen.mp4
-                    # For now, skip to next format
-                    pass
+                    from mutagen.mp4 import MP4
+                    audio = MP4(file_path)
+                    if '----:com.apple.iTunes:musicbrainz_releaseid' in audio:
+                        return audio['----:com.apple.iTunes:musicbrainz_releaseid'][0].decode('utf-8')
                 except Exception:
                     pass
 
@@ -597,6 +624,9 @@ class ArtworkCache:
                     if images:
                         thumbnail_url = images[0].get('thumbnails', {}).get('small')
                         if thumbnail_url:
+                            # Prepend base URL if relative
+                            if not thumbnail_url.startswith('http'):
+                                thumbnail_url = f"https://coverartarchive.org{thumbnail_url}"
                             req = urllib.request.Request(thumbnail_url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
                             with urllib.request.urlopen(req, timeout=3.5) as img_response:
                                 return img_response.read()

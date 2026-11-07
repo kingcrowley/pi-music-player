@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.artwork import ArtworkCache, get_art
+from mutagen.id3 import ID3, APIC
 
 RESULTS = []
 
@@ -26,9 +27,9 @@ RESULTS = []
 def check(name: str, condition: bool, detail: str = ""):
     """Record a test result."""
     status = "PASS" if condition else "FAIL"
-    mark = "✅" if condition else "❌"
+    mark = "PASS" if condition else "FAIL"
     RESULTS.append((status, name))
-    print(f"  [{mark}] {status}: {name}" + (f" — {detail}" if detail else ""))
+    print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
 
 
 def create_test_sidecar_art_files() -> str:
@@ -211,7 +212,7 @@ def run_all_tests():
         art_files = []
         for i in range(10):
             path = os.path.join(lru_dir, f"test_track_{i}.flac")
-            Path(af).touch()
+            Path(path).touch()
             art_files.append(path)
 
         # Add art beyond the cache limit (~1KB each)
@@ -254,10 +255,10 @@ def run_all_tests():
         print(f"Results: {passed}/{total} tests passed")
 
         if passed == total:
-            print("\n🎯 Slice 1.2: ACCEPTANCE CRITERIA MET")
+            print("\n[OK] Slice 1.2: ACCEPTANCE CRITERIA MET")
             return True
         else:
-            print(f"\n⚠️  Slice 1.2: {total - passed} test(s) need review")
+            print(f"\n[WARN] Slice 1.2: {total - passed} test(s) need review")
             return False
 
     finally:
