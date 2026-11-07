@@ -141,7 +141,7 @@ def run_all_tests():
         # Test 5b: MP3 with embedded APIC image (no sidecar)
         mp3_dir = tempfile.mkdtemp(prefix="mp3_test_")
         tmpdirs.append(mp3_dir)
-        mp3_path = os.path.join(tmpdir, "track2_api.mp3")
+        mp3_path = os.path.join(mp3_dir, "track2_api.mp3")
         create_mp3_with_apic(mp3_path)
         art_from_mp3 = cache.get_art(mp3_path)
         check("MP3 with embedded APIC returns artwork",

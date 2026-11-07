@@ -679,24 +679,26 @@ class ArtworkCache:
                                 mime_type = img_response.headers.get('Content-Type', 'image/jpeg')
                                 cache_path = self._save_artwork(mime_type, image_data)
                                 if cache_path:
-                                    self._cache_file(self._mbid_source_path, cache_path)
                                     return cache_path, mime_type
         except Exception as e:
             print(f"[ArtworkCache] Cover Art Archive error for MBID {mbid}: {e}")
             return None
 
     def _is_trusted_host(self, url: str) -> bool:
-        """Validate that a URL's host is in the trusted allowlist.
+        """Validate that a URL is HTTPS and its host is in the trusted allowlist.
 
         Args:
             url: Full URL to validate
 
         Returns:
-            True if the host is trusted, False otherwise
+            True if the URL is HTTPS and host is trusted, False otherwise
         """
         try:
             from urllib.parse import urlparse
-            host = urlparse(url).hostname
+            parsed = urlparse(url)
+            if parsed.scheme != 'https':
+                return False
+            host = parsed.hostname
             if not host:
                 return False
             # Strip port if present
