@@ -1,5 +1,5 @@
 """
-Album Art Handler — Slice 1.2 & 1.3
+Album Art Handler - Slice 1.2 & 1.3
 
 Extracts embedded artwork from audio files, with caching and web fallback.
 Designed for low-RAM Linux systems (Pi Zero 2 W).
@@ -34,7 +34,7 @@ import json
 import urllib.request
 import urllib.error
 
-# Trusted HTTPS hosts for Cover Art Archive thumbnails — prevents SSRF via
+# Trusted HTTPS hosts for Cover Art Archive thumbnails - prevents SSRF via
 # attacker-controlled redirect targets. Only these hosts are allowed.
 # Covers Art Archive thumbnails are served from archive.org CDN hosts whose
 # exact server names vary (dn711103.ca.archive.org, ia*.us.archive.org, etc.),
@@ -146,7 +146,7 @@ class ArtworkCache:
         # OrderedDict: source_path -> (cache_path, file_size_in_bytes)
         # Ordered by access (most recently used last)
         self._cache: OrderedDict[str, tuple] = OrderedDict()
-        # RLock: reentrant — _cache_file and _enforce_size_limit both acquire it
+        # RLock: reentrant - _cache_file and _enforce_size_limit both acquire it
         self._cache_lock = threading.RLock()
 
         # Per-path locks for concurrent access serialization
@@ -220,7 +220,7 @@ class ArtworkCache:
                     self._cache.move_to_end(file_path)
                     return cache_path
                 else:
-                    # Stale cache entry — remove it
+                    # Stale cache entry - remove it
                     del self._cache[file_path]
             return None
 
@@ -385,10 +385,10 @@ class ArtworkCache:
                 if file_path in self._cache:
                     existing_cache_path, existing_size = self._cache[file_path]
                     if existing_cache_path == art_path:
-                        # Same entry — just move to MRU
+                        # Same entry - just move to MRU
                         self._cache.move_to_end(file_path)
                     else:
-                        # Different path — remove old cached file, store new
+                        # Different path - remove old cached file, store new
                         try:
                             os.remove(existing_cache_path)
                         except FileNotFoundError:
@@ -490,7 +490,7 @@ class ArtworkCache:
         1. Cached art (check before extraction)
         2. Embedded art (Mutagen)
         3. Local sidecar file (folder.jpg / cover.jpg in same directory)
-        4. Web fallback (MusicBrainz/Cover Art Archive) — Slice 1.3
+        4. Web fallback (MusicBrainz/Cover Art Archive) - Slice 1.3
 
         Args:
             file_path: Path to audio file
@@ -502,12 +502,12 @@ class ArtworkCache:
         try:
             file_path = str(file_path)
 
-            # Skip non-existent files immediately — no cache or sidecar effects
+            # Skip non-existent files immediately - no cache or sidecar effects
             if not os.path.exists(file_path):
                 self._call_callback(callback, None)
                 return None
 
-            # Check cache first — return early with MRU update if cached
+            # Check cache first - return early with MRU update if cached
             cached_result = self._check_cache(file_path)
             if cached_result:
                 self._call_callback(callback, cached_result)
@@ -584,14 +584,14 @@ class ArtworkCache:
             self._cache.move_to_end(file_path)
             return cache_path
         else:
-            # Stale cache entry — remove it
+            # Stale cache entry - remove it
             del self._cache[file_path]
             return None
 
     def _get_web_art(self, file_path: str) -> Optional[str]:
         """Fetch album art via MusicBrainz Release ID (MBID) + Cover Art Archive.
 
-        This is Step 1 of Slice 1.3 — the web fallback chain:
+        This is Step 1 of Slice 1.3 - the web fallback chain:
         1. Extract MBID from audio file metadata (FLAC/MBID tags)
         2. Query Cover Art Archive API for release art
         3. Download and cache the artwork
@@ -624,7 +624,7 @@ class ArtworkCache:
             if self._cache_file(file_path, cache_path):
                 return cache_path
             else:
-                # Caching rejected the image (e.g., oversized) — clean up and return None
+                # Caching rejected the image (e.g., oversized) - clean up and return None
                 try:
                     os.remove(cache_path)
                 except Exception:
@@ -640,13 +640,13 @@ class ArtworkCache:
 
         Supports:
         - FLAC: musicbrainz_releaseid VorbisComment
-        - MP3: TXXX:MusicBrainz Release ID (or Picard's musicbrainz_albumid)
-        - M4A: iTunes 'musicbrainz_releaseid' tag
+        - MP3: TXXX:MusicBrainz Release ID (or Picard MusicBrainz Album Id)
+        - M4A: iTunes musicbrainz_releaseid tag
 
         MusicBrainz Picard writes the release ID as:
-        - FLAC: musicbrainz_releaseid VorbisComment (and Picard's musicbrainz_albumid)
-        - MP3: TXXX:MusicBrainz Release ID (and Picard's MusicBrainz Album Id)
-        - M4A: ----:com.apple.iTunes:musicbrainz_releaseid (and Picard's MusicBrainz Album Id)
+        - FLAC: musicbrainz_releaseid VorbisComment (and Picard MusicBrainz Album Id)
+        - MP3: TXXX:MusicBrainz Release ID (and Picard MusicBrainz Album Id)
+        - M4A: ----:com.apple.iTunes:musicbrainz_releaseid (and Picard MusicBrainz Album Id)
 
         Args:
             file_path: Path to audio file
@@ -715,7 +715,7 @@ class ArtworkCache:
             Tuple of (cached_art_path, mime_type), or None if fetch fails
         """
         if self.test_mode:
-            # Skip network in test mode — return None so caller knows no web art
+            # Skip network in test mode - return None so caller knows no web art
             print(f"[ArtworkCache] Cover Art Archive skipped (test mode) for MBID {mbid}")
             return None
 
