@@ -262,6 +262,28 @@ Copy this for each slice:
 - **All MPD calls wrapped** in try/except — no exception should ever propagate to the Tkinter event loop
 - **Reconnect logic**: on failed command, call `connect()` once and retry the command once
 - **Status polling**: `get_status()` is called from background thread; safe because it never touches Tkinter
+- **MPD socket lifecycle**: Ensure systemd service file declares `After=mpd.service network.target` so MPD socket is ready before UI starts
+- **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
+
+#### Known issues from CodeRabbit review
+- Web lookups block the caller (~7s per track with no art) — deferred per developer request
+- Art isn't restored after a restart — deferred per developer request
+- The startup-scan check at line 174 of artwork.py can never be true because it compares a string to a Path
+- CodeRabbit's PHASE_DEVELOPMENT_PLAN.md:266 service-user comment is unaddressed: update the "MPD runs as dedicated user" plan entry
+
+#### Known issues from CodeRabbit review (fixed)
+- Size-limit test now exercises eviction correctly (80KB cached with 40KB sidecar files, track 0 evicted)
+- The online fallback has test coverage (the `test_web_fallback_mocked` smoke test in test_artwork.py)
+
+#### Cleanup (non-blocking)
+- `self._last_mbid` is set twice (lines 705 and 710 of artwork.py) and never read
+- The docstring at line 689 says every redirect is validated, but the API request at line 713 still uses plain `urlopen`
+- The `_resolve_mbid` docstring (lines 624-629) says Picard writes `musicbrainz_releaseid` for FLAC; it's actually `musicbrainz_albumid`
+- No test for FLAC embedded art (VorbisComment pictures)
+- No test for M4A embedded art (iTunes artwork atoms)
+- No CI pipeline — would have caught the two parse failures and the failing test earlier in this PR
+- The web fallback test still patches `_is_trusted_host` to always return True, so the allowlist isn't exercised
+- CodeRabbit's service-user comment on line 266: update the "MPD runs as dedicated user" plan entry to match the installation guide's controller service user
 
 #### Test Criteria (Manual)
 ```bash
