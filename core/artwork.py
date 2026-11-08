@@ -606,7 +606,7 @@ class ArtworkCache:
         - M4A: iTunes 'musicbrainz_releaseid' tag
 
         MusicBrainz Picard writes the release ID as:
-        - FLAC: musicbrainz_releaseid VorbisComment
+        - FLAC: musicbrainz_releaseid VorbisComment (and Picard's musicbrainz_albumid)
         - MP3: TXXX:MusicBrainz Release ID (and Picard's MusicBrainz Album Id)
         - M4A: ----:com.apple.iTunes:musicbrainz_releaseid (and Picard's MusicBrainz Album Id)
 
@@ -623,8 +623,10 @@ class ArtworkCache:
             if filepath.suffix.lower() == '.flac':
                 try:
                     audio = FLAC(file_path)
-                    if 'musicbrainz_releaseid' in audio:
-                        return audio['musicbrainz_releaseid'][0]
+                    # Check explicit tag first, then Picard alias
+                    for key in ['musicbrainz_releaseid', 'musicbrainz_albumid']:
+                        if key in audio:
+                            return audio[key][0]
                 except Exception:
                     pass
 
