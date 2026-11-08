@@ -34,15 +34,17 @@ def check(name: str, condition: bool, detail: str = ""):
 
 
 def test_web_fallback_mocked():
-    """Test web fallback with mocked urlopen (test_mode=False).
+    """Test web fallback fetch path with mocked urlopen and build_opener.
 
-    Confirms the fetch path runs end-to-end. Uses a patched urlopen so no
-    real network call is made. Asserts that _fetch_cover_art_archive returns
-    a cached path when the Cover Art Archive returns valid data.
+    Confirms the fetch path runs end-to-end without network access:
+    - JSON metadata response with valid thumbnail URL
+    - Thumbnail image response via build_opener().open()
+    - Redirect validation through _is_trusted_host
+    - Cached JPEG returned with correct MIME type
     """
     from unittest.mock import MagicMock, patch
     from core.artwork import ArtworkCache
-    import os, shutil, tempfile
+    import tempfile, os, shutil
 
     tmpdir = tempfile.mkdtemp()
     cache_dir = os.path.join(tmpdir, "cache")
@@ -55,26 +57,40 @@ def test_web_fallback_mocked():
 
     jpeg_data = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9'
 
-    # First call: JSON metadata response
-    # Second call: thumbnail image response
-    responses = [
-        MagicMock(status=200, read=lambda: b'{"images": [{"thumbnails": {"small": "http://example.com/art.jpg"}}]}'),
-        MagicMock(status=200, read=lambda: jpeg_data),
-    ]
+    # Response 1: Cover Art Archive JSON metadata
+    metadata_mock = MagicMock()
+    metadata_mock.__enter__.return_value = metadata_mock
+    metadata_mock.status = 200
+    metadata_mock.read.return_value = b'{"images": [{"thumbnails": {"small": "https://coverartarchive.org/images/thumbnail.jpg"}}]}'
 
-    # Patch at the module level where urllib.request is used
-    with patch("urllib.request.urlopen", side_effect=responses):
-        with patch("core.artwork.ArtworkCache._is_trusted_host", return_value=True):
-            result = cache._fetch_cover_art_archive("test-mbid-1234")
+    # Response 2: Thumbnail image
+    image_mock = MagicMock()
+    image_mock.__enter__.return_value = image_mock
+    image_mock.status = 200
+    image_mock.read.return_value = jpeg_data
+    image_mock.geturl.return_value = "https://dn711103.ca.archive.org/art.jpg"
+    image_mock.headers = {"Content-Type": "image/jpeg"}
 
-    cache.close()
-    shutil.rmtree(tmpdir, ignore_errors=True)
+    try:
+        with patch("core.artwork.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = metadata_mock
 
-    assert result is not None, "Web fallback should return cached art path"
-    cache_path, mime_type = result
-    assert os.path.exists(cache_path), f"Cached art file does not exist: {cache_path}"
-    assert mime_type == "image/jpeg", f"Expected image/jpeg, got {mime_type}"
-    print(f"Web fallback test PASSED: {cache_path} ({mime_type})")
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = image_mock
+
+            with patch("core.artwork.urllib.request.build_opener", return_value=mock_opener):
+                with patch("core.artwork.ArtworkCache._is_trusted_host", return_value=True):
+                    result = cache._fetch_cover_art_archive("test-mbid-1234")
+
+        assert result is not None, "Web fallback should return cached art path"
+        cache_path, mime_type = result
+        assert os.path.exists(cache_path), f"Cached art file does not exist: {cache_path}"
+        assert mime_type == "image/jpeg", f"Expected image/jpeg, got {mime_type}"
+        print(f"Web fallback test PASSED: {cache_path} ({mime_type})")
+
+    finally:
+        cache.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def create_test_sidecar_art_files() -> str:
