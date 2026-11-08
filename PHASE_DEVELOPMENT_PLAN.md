@@ -266,8 +266,14 @@ Copy this for each slice:
 - **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
 
 #### Known issues from CodeRabbit review
-- The online fallback web lookups currently block the caller (~7s per track)
-- Size-limit test checks nothing (reporting 0.0 bytes cached)
+- Web lookups block the caller (~7s per track with no art) — deferred per developer request
+- Art isn't restored after a restart — deferred per developer request
+- The online fallback has no test coverage. A test with a patched urlopen would have caught item 3 and the name mismatch fix.
+- The startup-scan check at line 192 of artwork.py can never be true because it compares a string to a Path.
+- CodeRabbit's PHASE_DEVELOPMENT_PLAN.md:266 service-user comment is unaddressed: update the "MPD runs as dedicated user" plan entry to match the installation guide's controller service user, and ensure python-mpd2 is installed in an environment accessible to that user so the controller can import mpd and start.
+
+#### Known issues from CodeRabbit review (fixed)
+- Size-limit test now exercises eviction correctly (80KB cached with 40KB sidecar files, track 0 evicted)
 
 #### Test Criteria (Manual)
 ```bash
