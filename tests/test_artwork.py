@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.artwork import ArtworkCache, get_art
+from unittest.mock import MagicMock, patch
 from mutagen.id3 import ID3, APIC
 
 RESULTS = []
@@ -30,6 +31,50 @@ def check(name: str, condition: bool, detail: str = ""):
     mark = "PASS" if condition else "FAIL"
     RESULTS.append((status, name))
     print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
+
+
+def test_web_fallback_mocked():
+    """Test web fallback with mocked urlopen (test_mode=False).
+
+    Confirms the fetch path runs end-to-end. Uses a patched urlopen so no
+    real network call is made. Asserts that _fetch_cover_art_archive returns
+    a cached path when the Cover Art Archive returns valid data.
+    """
+    from unittest.mock import MagicMock, patch
+    from core.artwork import ArtworkCache
+    import os, shutil, tempfile
+
+    tmpdir = tempfile.mkdtemp()
+    cache_dir = os.path.join(tmpdir, "cache")
+    os.makedirs(cache_dir)
+
+    track = os.path.join(tmpdir, "test.flac")
+    open(track, "wb").close()
+
+    cache = ArtworkCache(max_size_mb=5, cache_dir=cache_dir, test_mode=False)
+
+    jpeg_data = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9'
+
+    # First call: JSON metadata response
+    # Second call: thumbnail image response
+    responses = [
+        MagicMock(status=200, read=lambda: b'{"images": [{"thumbnails": {"small": "http://example.com/art.jpg"}}]}'),
+        MagicMock(status=200, read=lambda: jpeg_data),
+    ]
+
+    # Patch at the module level where urllib.request is used
+    with patch("urllib.request.urlopen", side_effect=responses):
+        with patch("core.artwork.ArtworkCache._is_trusted_host", return_value=True):
+            result = cache._fetch_cover_art_archive("test-mbid-1234")
+
+    cache.close()
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    assert result is not None, "Web fallback should return cached art path"
+    cache_path, mime_type = result
+    assert os.path.exists(cache_path), f"Cached art file does not exist: {cache_path}"
+    assert mime_type == "image/jpeg", f"Expected image/jpeg, got {mime_type}"
+    print(f"Web fallback test PASSED: {cache_path} ({mime_type})")
 
 
 def create_test_sidecar_art_files() -> str:
@@ -261,6 +306,13 @@ def run_all_tests():
         os.makedirs(test_cache_dir, exist_ok=True)
         quick_result = get_art(track1_path, max_size_mb=5, cache_dir=test_cache_dir)
         check("get_art() convenience function works", quick_result is not None)
+
+        # Test 12b: Web fallback with mocked urlopen (test_mode=False)
+        try:
+            test_web_fallback_mocked()
+            check("Web fallback with mocked urlopen", True)
+        except Exception as e:
+            check("Web fallback with mocked urlopen", False, f"Error: {e}")
 
         # Test 13: Non-existent file returns None
         nonexistent = cache.get_art(os.path.join(tmpdir, "nonexistent.flac"))
