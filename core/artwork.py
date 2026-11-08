@@ -55,25 +55,6 @@ from mutagen.easyid3 import EasyID3
 from PIL import Image
 
 
-class ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Custom redirect handler that validates each redirect target against the allowlist."""
-
-    def __init__(self, artwork_cache):
-        self.artwork_cache = artwork_cache
-
-    def http_error_302(self, req, fp, code, msg, headers):
-        new_url = headers.get('Location')
-        if new_url and not self.artwork_cache._is_trusted_host(new_url):
-            raise urllib.error.HTTPError(new_url, 403,
-                "Untrusted redirect target", headers, fp)
-        return super().http_error_302(req, fp, code, msg, headers)
-
-    http_error_301 = http_error_302
-    http_error_303 = http_error_302
-    http_error_307 = http_error_302
-    http_error_308 = http_error_302
-
-
 def get_art(file_path: str, max_size_mb: int = 50, cache_dir: Optional[str] = None) -> Optional[str]:
     """Convenience function to get album art for a file.
 
@@ -112,6 +93,7 @@ class ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class ArtworkCache:
+    """Manages album art caching with size limits and thread safety.
 
     Supports embedded artwork extraction from:
     - FLAC files (VorbisComment pictures)
