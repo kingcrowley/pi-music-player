@@ -135,9 +135,9 @@ class ArtworkCache:
         thread starts so existing cache entries are available
         immediately.
 
-        Note: Scanned files use content hash as key. Since we don't know
-        the original source audio file path, these are tracked for size
-        accounting only (eviction). Actual lookups use source file_path.
+        Note: Scanned files use their cache file path as key (not content
+        hash), so identical content files from the same album are tracked
+        separately. Actual lookups use source file_path.
         """
         if not self.cache_dir.exists():
             return
@@ -146,17 +146,15 @@ class ArtworkCache:
             if cache_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
                 try:
                     size = cache_file.stat().st_size
-                    # Use content hash as key for scanned orphan files
-                    # These can be evicted but won't match _check_cache lookups
-                    content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
-                    scanned_key = f"scanned:{content_hash}"
-                    # If the same path already exists under source key, reconcile
-                    # to avoid double counting during eviction
-                    if scanned_key in self._cache and any(k != scanned_key and v[0] == cache_file for k, v in self._cache.items()):
-                        # Same file registered under both keys — remove scanned entry
-                        del self._cache[scanned_key]
+                    cache_path = str(cache_file)
+                    # Use cache path as key so identical-content files are
+                    # tracked separately (they have different paths).
+                    scanned_key = f"scanned:{cache_path}"
+                    # If the same path already exists under a source key,
+                    # drop the scanned entry to avoid double counting.
+                    if any(k != scanned_key and v[0] == cache_path for k, v in self._cache.items()):
                         continue
-                    self._cache[scanned_key] = (str(cache_file), size)
+                    self._cache[scanned_key] = (cache_path, size)
                 except Exception:
                     pass
 
@@ -601,10 +599,10 @@ class ArtworkCache:
         - MP3: TXXX:MusicBrainz Release ID (or Picard's musicbrainz_albumid)
         - M4A: iTunes 'musicbrainz_releaseid' tag
 
-        MusicBrainz Picard commonly writes the release ID as
-        `musicbrainz_albumid` in TXXX frames across all formats. This handler
-        checks for both the explicit `MusicBrainz Release ID`/`musicbrainz_releaseid`
-        tags and Picard's `musicbrainz_albumid` alias.
+        MusicBrainz Picard writes the release ID as:
+        - FLAC: musicbrainz_releaseid VorbisComment
+        - MP3: TXXX:MusicBrainz Release ID (and Picard's MusicBrainz Album Id)
+        - M4A: ----:com.apple.iTunes:musicbrainz_releaseid (and Picard's MusicBrainz Album Id)
 
         Args:
             file_path: Path to audio file
@@ -619,10 +617,8 @@ class ArtworkCache:
             if filepath.suffix.lower() == '.flac':
                 try:
                     audio = FLAC(file_path)
-                    # Check explicit tag first, then Picard alias
-                    for key in ['musicbrainz_releaseid', 'musicbrainz_albumid']:
-                        if key in audio:
-                            return audio[key][0]
+                    if 'musicbrainz_releaseid' in audio:
+                        return audio['musicbrainz_releaseid'][0]
                 except Exception:
                     pass
 
@@ -631,8 +627,8 @@ class ArtworkCache:
                 try:
                     id3 = ID3(file_path)
                     for frame in id3.getall('TXXX'):
-                        # Match both 'MusicBrainz Release ID' and Picard's 'musicbrainz_albumid'
-                        if frame.desc in ('MusicBrainz Release ID', 'musicbrainz_albumid'):
+                        # Match MusicBrainz Release ID and Picard's MusicBrainz Album Id
+                        if frame.desc in ('MusicBrainz Release ID', 'MusicBrainz Album Id'):
                             return frame.text[0]
                 except Exception:
                     pass
@@ -643,7 +639,8 @@ class ArtworkCache:
                     from mutagen.mp4 import MP4
                     audio = MP4(file_path)
                     # Check iTunes key first, then Picard alias
-                    for key in ['----:com.apple.iTunes:musicbrainz_releaseid', 'musicbrainz_albumid']:
+                    for key in ['----:com.apple.iTunes:musicbrainz_releaseid',
+                                '----:com.apple.iTunes:MusicBrainz Album Id']:
                         if key in audio:
                             val = audio[key][0]
                             if isinstance(val, bytes):
@@ -677,6 +674,9 @@ class ArtworkCache:
             return None
 
         url = f"https://coverartarchive.org/release/{mbid}"
+        # Store original MBID in the instance for logging errors
+        # (helps when debugging network issues without exposing user data)
+        self._last_mbid = mbid
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
             with urllib.request.urlopen(req, timeout=3.5) as response:
