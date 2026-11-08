@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.player import MusicPlayer
-from core.artwork import ArtworkCache, get_art
+from core.artwork import ArtworkCache
 
 
 def _get_mpd_music_dir() -> str:

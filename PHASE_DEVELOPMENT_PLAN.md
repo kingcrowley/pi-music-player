@@ -265,6 +265,10 @@ Copy this for each slice:
 - **MPD socket lifecycle**: Ensure systemd service file declares `After=mpd.service network.target` so MPD socket is ready before UI starts
 - **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
 
+#### Known issues from CodeRabbit review
+- The online fallback web lookups currently block the caller (~7s per track)
+- Size-limit test checks nothing (reporting 0.0 bytes cached)
+
 #### Test Criteria (Manual)
 ```bash
 # 1. Start MPD with test music

@@ -214,39 +214,44 @@ def run_all_tests():
         lru_cache_dir = os.path.join(lru_dir, "cache")
         os.makedirs(lru_cache_dir, exist_ok=True)
 
-        # Use a small cache (2KB total) with 1KB art files
-        # This means after adding 3 files, the first should be evicted
-        small_cache = ArtworkCache(max_size_mb=0.002, cache_dir=lru_cache_dir, test_mode=True)
+        # Use a small cache (~100KB total) with ~40KB sidecar art per track
+        # This means after adding 3 tracks (120KB total), the first should be evicted
+        small_cache = ArtworkCache(max_size_mb=0.1, cache_dir=lru_cache_dir, test_mode=True)
 
-        # Create test audio files
+        # Create test audio files, each in its own subdirectory with a folder.jpg sidecar
         test_tracks = []
         for i in range(5):
-            path = os.path.join(lru_dir, f"test_track_{i}.flac")
+            track_dir = os.path.join(lru_dir, f"album_{i}")
+            os.makedirs(track_dir, exist_ok=True)
+            path = os.path.join(track_dir, f"test_track_{i}.flac")
             Path(path).touch()
             test_tracks.append(path)
 
-        # Create actual artwork files (1KB each) for sidecar fallback
-        for i in range(5):
-            sidecar_path = os.path.join(lru_dir, f"cover_{i}.jpg")
+            # Create folder.jpg sidecar (~40KB) — matches code's sidecar_names
+            sidecar_path = os.path.join(track_dir, "folder.jpg")
+            jpeg_data = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9'
+            padding = b'\x00' * (40000 - len(jpeg_data))
             with open(sidecar_path, "wb") as f:
-                f.write(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9')
+                f.write(jpeg_data + padding)
 
-        # Add art for tracks 0, 1, 2 — total ~3KB exceeds 2KB limit
+        # Add art for tracks 0, 1, 2 — total ~120KB exceeds 0.1MB limit
         # Track 0 should be evicted when track 2 is added
         art_paths = []
         for i in range(3):
             result = small_cache.get_art(test_tracks[i])
             art_paths.append(result)
 
-        # Check cache has 2 entries (track 0 evicted, tracks 1,2 remain)
+        # Check cache enforces size limit (under 0.1MB)
         total_cached_size = sum(size for _, size in small_cache._cache.values())
         check("LRU cache enforced size limit",
-              total_cached_size < 0.002 * 1024 * 1024,
+              total_cached_size < 0.1 * 1024 * 1024,
               f"Total cached size: {total_cached_size:.1f} bytes")
 
-        # In test mode, cache entries may be empty, so verify size limit
+        # Track 0 should have been evicted; tracks 1 and 2 should remain
         check("Oldest entry evicted from LRU cache",
-              len(small_cache._cache) <= 2,
+              test_tracks[0] not in small_cache._cache
+              and test_tracks[1] in small_cache._cache
+              and test_tracks[2] in small_cache._cache,
               f"Cache keys: {list(small_cache._cache.keys())}")
 
         small_cache.close()

@@ -36,16 +36,14 @@ import urllib.error
 
 # Trusted HTTPS hosts for Cover Art Archive thumbnails — prevents SSRF via
 # attacker-controlled redirect targets. Only these hosts are allowed.
+# Cover Art Archive thumbnails are served from archive.org CDN hosts whose
+# exact server names vary (ia*.us.archive.org), so the allowlist matches the
+# IA domain pattern rather than listing individual hosts.
 _TRUSTED_ART_HOSTS = {
     'coverartarchive.org',
     'www.coverartarchive.org',
     'archive.org',
-    'ia600000.us.archive.org',
-    'ia800000.us.archive.org',
-    'ia900000.us.archive.org',
-    'ia1000000.us.archive.org',
-    'uploads.tomboy.cz',
-    'img.discogs.com',
+    'ia.us.archive.org',
 }
 
 from mutagen.flac import FLAC
@@ -584,8 +582,16 @@ class ArtworkCache:
             cache_path, _mime_type = result
             # Cache the result from the web fetch (has already been cached by _fetch_cover_art_archive)
             # But ensure it's in the cache for the original file path
-            self._cache_file(file_path, cache_path)
-            return cache_path
+            # Only return the path if caching accepted it (not rejected for size)
+            if self._cache_file(file_path, cache_path):
+                return cache_path
+            else:
+                # Caching rejected the image (e.g., oversized) — clean up and return None
+                try:
+                    os.remove(cache_path)
+                except Exception:
+                    pass
+                return None
 
         except Exception as e:
             print(f"[ArtworkCache] Web fallback error: {e}")
@@ -686,14 +692,21 @@ class ArtworkCache:
                     if images:
                         thumbnail_url = images[0].get('thumbnails', {}).get('small')
                         if thumbnail_url:
-                            # Upgrade to HTTPS and validate host
+                            # Upgrade to HTTPS and validate host (including redirects)
                             if not thumbnail_url.startswith('https://'):
                                 thumbnail_url = thumbnail_url.replace('http://', 'https://', 1)
                             if not self._is_trusted_host(thumbnail_url):
                                 print(f"[ArtworkCache] Rejected untrusted thumbnail host: {thumbnail_url}")
                                 return None
                             req = urllib.request.Request(thumbnail_url, headers={'User-Agent': 'PiMusicPlayer/1.0'})
-                            with urllib.request.urlopen(req, timeout=3.5) as img_response:
+                            # Use custom opener to validate redirects against allowlist
+                            opener = urllib.request.build_opener(ValidatedRedirectHandler(self))
+                            with opener.open(req, timeout=3.5) as img_response:
+                                # Final URL after redirects must also be trusted
+                                final_url = img_response.geturl()
+                                if not self._is_trusted_host(final_url):
+                                    print(f"[ArtworkCache] Rejected untrusted redirect target: {final_url}")
+                                    return None
                                 image_data = img_response.read()
                                 mime_type = img_response.headers.get('Content-Type', 'image/jpeg')
                                 cache_path = self._save_artwork(mime_type, image_data)
@@ -702,6 +715,23 @@ class ArtworkCache:
         except Exception as e:
             print(f"[ArtworkCache] Cover Art Archive error for MBID {mbid}: {e}")
             return None
+
+    class ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
+        """Custom redirect handler that validates each redirect target against the allowlist."""
+
+        def __init__(self, artwork_cache):
+            self.artwork_cache = artwork_cache
+
+        def http_error_302(self, req, fp, code, msg, headers):
+            new_url = headers.get('Location')
+            if new_url and not self.artwork_cache._is_trusted_host(new_url):
+                raise urllib.error.HTTPError(new_url, 403,
+                    "Untrusted redirect target", headers, fp)
+            return super().http_error_302(req, fp, code, msg, headers)
+
+        http_error_301 = http_error_302
+        http_error_303 = http_error_302
+        http_error_307 = http_error_302
 
     def _is_trusted_host(self, url: str) -> bool:
         """Validate that a URL is HTTPS and its host is in the trusted allowlist.
