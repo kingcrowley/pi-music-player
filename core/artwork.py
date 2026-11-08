@@ -36,15 +36,17 @@ import urllib.error
 
 # Trusted HTTPS hosts for Cover Art Archive thumbnails — prevents SSRF via
 # attacker-controlled redirect targets. Only these hosts are allowed.
-# Cover Art Archive thumbnails are served from archive.org CDN hosts whose
-# exact server names vary (ia*.us.archive.org), so the allowlist matches the
-# IA domain pattern rather than listing individual hosts.
+# Covers Art Archive thumbnails are served from archive.org CDN hosts whose
+# exact server names vary (dn711103.ca.archive.org, ia*.us.archive.org, etc.),
+# so the allowlist matches archive.org and any .archive.org subdomain.
 _TRUSTED_ART_HOSTS = {
     'coverartarchive.org',
     'www.coverartarchive.org',
     'archive.org',
-    'ia.us.archive.org',
 }
+
+# Subdomains of archive.org that are also trusted (matched by suffix)
+_TRUSTED_ART_HOST_SUFFIXES = ('.archive.org',)
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3NoHeaderError, ID3
@@ -508,7 +510,6 @@ class ArtworkCache:
                 if result_path is None:
                     web_result = self._get_web_art(file_path)
                     if web_result:
-                        self._cache_file(file_path, web_result)
                         result_path = web_result
 
             # Call callback OUTSIDE the lock to prevent deadlock
@@ -681,6 +682,9 @@ class ArtworkCache:
             print(f"[ArtworkCache] Cover Art Archive skipped (test mode) for MBID {mbid}")
             return None
 
+        # Store original MBID for error logging (helps with debugging without exposing user data)
+        self._last_mbid = mbid
+
         url = f"https://coverartarchive.org/release/{mbid}"
         # Store original MBID in the instance for logging errors
         # (helps when debugging network issues without exposing user data)
@@ -714,6 +718,7 @@ class ArtworkCache:
                                 cache_path = self._save_artwork(mime_type, image_data)
                                 if cache_path:
                                     return cache_path, mime_type
+                                # If _save_artwork returned None, fall through to return None
         except Exception as e:
             print(f"[ArtworkCache] Cover Art Archive error for MBID {mbid}: {e}")
             return None
@@ -734,6 +739,7 @@ class ArtworkCache:
         http_error_301 = http_error_302
         http_error_303 = http_error_302
         http_error_307 = http_error_302
+        http_error_308 = http_error_302
 
     def _is_trusted_host(self, url: str) -> bool:
         """Validate that a URL is HTTPS and its host is in the trusted allowlist.
@@ -754,6 +760,12 @@ class ArtworkCache:
                 return False
             # Strip port if present
             host = host.split(':')[0].lower()
-            return host in _TRUSTED_ART_HOSTS
+            # Check exact match or archive.org subdomain
+            if host in _TRUSTED_ART_HOSTS:
+                return True
+            for suffix in _TRUSTED_ART_HOST_SUFFIXES:
+                if host.endswith(suffix):
+                    return True
+            return False
         except Exception:
             return False
