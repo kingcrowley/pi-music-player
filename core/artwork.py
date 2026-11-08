@@ -149,7 +149,14 @@ class ArtworkCache:
                     # Use content hash as key for scanned orphan files
                     # These can be evicted but won't match _check_cache lookups
                     content_hash = hashlib.sha256(cache_file.read_bytes()).hexdigest()
-                    self._cache[f"scanned:{content_hash}"] = (str(cache_file), size)
+                    scanned_key = f"scanned:{content_hash}"
+                    # If the same path already exists under source key, reconcile
+                    # to avoid double counting during eviction
+                    if scanned_key in self._cache and any(k != scanned_key and v[0] == cache_file for k, v in self._cache.items()):
+                        # Same file registered under both keys — remove scanned entry
+                        del self._cache[scanned_key]
+                        continue
+                    self._cache[scanned_key] = (str(cache_file), size)
                 except Exception:
                     pass
 
@@ -327,6 +334,18 @@ class ArtworkCache:
                     print(f"[ArtworkCache] Error removing rejected cache file: {e}")
                 return False
             with self._cache_lock:
+                # Reconcile any scanned:* entries pointing to the same path
+                # before registering the source key. This prevents duplicate entries
+                # from being counted toward the size limit, which could cause
+                # premature eviction of valid entries and return paths that no longer
+                # exist on disk.
+                scanned_keys_to_remove = []
+                for key in list(self._cache.keys()):
+                    if key.startswith("scanned:") and self._cache[key][0] == art_path:
+                        scanned_keys_to_remove.append(key)
+                for key in scanned_keys_to_remove:
+                    del self._cache[key]
+
                 # Reconcile if source path already exists in cache
                 if file_path in self._cache:
                     existing_cache_path, existing_size = self._cache[file_path]

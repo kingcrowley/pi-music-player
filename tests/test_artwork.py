@@ -117,6 +117,14 @@ def run_all_tests():
         check("ArtworkCache creates cache directory",
               os.path.exists(cache_dir) and os.path.isdir(cache_dir))
 
+        # Test 1b: Mutagen ID3 imports present for APIC tests
+        try:
+            from mutagen.id3 import ID3, APIC
+            check("Mutagen ID3 imports available",
+                  ID3 is not None and APIC is not None)
+        except ImportError:
+            check("Mutagen ID3 imports available", False)
+
         # Test 2: Sidecar art extracted from track1.flac
         track1_path = os.path.join(tmpdir, "track1.flac")
         art_path = cache.get_art(track1_path)
