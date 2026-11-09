@@ -21,7 +21,6 @@ database {
 audio_output {
     type        "pulse"
     name        "PulseAudio Default"
-    server      "pulseaudio"
 }
 
 auto_update        "no"
@@ -30,5 +29,3 @@ input {
     timeout      "10"
     timeout_action "stop"
 }
-
-<|end|>

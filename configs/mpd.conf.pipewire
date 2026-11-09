@@ -29,5 +29,3 @@ input {
     timeout      "10"
     timeout_action "stop"
 }
-
-<|end|>

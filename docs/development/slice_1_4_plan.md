@@ -16,7 +16,7 @@ Auto-detect runtime environment; generate appropriate MPD config with correct au
   - Check for XWayland: `XWAYLAND_DISPLAY` or check if XWayland process running
 - `detect_distro()` → `'debian' | 'ubuntu' | 'fedora' | 'arch' | 'alpine' | 'nixos' | 'unknown'`
   - Read `/etc/os-release` for `ID` and `ID_LIKE`
-- `get_mpd_config_template()` → path to appropriate `mpd.conf.*` template
+- `get_mpd_config_template()` → template name (e.g. "mpd.conf.alsa"), not a path
 - `generate_mpd_conf(output_path='/etc/mpd.conf')` — writes MPD config with correct `audio_output` block:
   - ALSA: `audio_output { type "alsa" ... }` with device selection (HDMI vs 3.5mm vs HAT DAC)
   - PipeWire: `audio_output { type "pipewire" ... }`

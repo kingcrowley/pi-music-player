@@ -4,6 +4,7 @@ Provides configuration loading, saving, and validation with
 detected values + user overrides.
 """
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -59,13 +60,13 @@ class Config:
                 # Merge with defaults to ensure all keys exist
                 return self._merge_with_defaults(loaded)
             except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Failed to load config from {self.config_path}: {e}")
-                return self.DEFAULT_CONFIG.copy()
-        return self.DEFAULT_CONFIG.copy()
+                print(f"Error: Failed to load config from {self.config_path}: {e}")
+                raise ValueError(f"Invalid or unreadable configuration file: {self.config_path}")
+        return copy.deepcopy(self.DEFAULT_CONFIG)
 
     def _merge_with_defaults(self, loaded: Dict[str, Any]) -> Dict[str, Any]:
         """Recursively merge loaded config with defaults."""
-        result = self.DEFAULT_CONFIG.copy()
+        result = copy.deepcopy(self.DEFAULT_CONFIG)
         for key, value in loaded.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
                 result[key] = self._merge_with_defaults(value)
@@ -123,6 +124,9 @@ class Config:
         for k in keys[:-1]:
             if k not in target:
                 target[k] = {}
+            # Ensure intermediate value is a dict before descending
+            if not isinstance(target[k], dict):
+                return False
             target = target[k]
         target[keys[-1]] = value
         return True
