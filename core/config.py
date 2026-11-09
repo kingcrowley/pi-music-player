@@ -60,16 +60,17 @@ class Config:
                 # Merge with defaults to ensure all keys exist
                 return self._merge_with_defaults(loaded)
             except (json.JSONDecodeError, IOError) as e:
-                print(f"Error: Failed to load config from {self.config_path}: {e}")
-                raise ValueError(f"Invalid or unreadable configuration file: {self.config_path}")
+                raise ValueError(f"Invalid or unreadable configuration file: {self.config_path}") from e
         return copy.deepcopy(self.DEFAULT_CONFIG)
 
-    def _merge_with_defaults(self, loaded: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_with_defaults(
+        self, loaded: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Recursively merge loaded config with defaults."""
-        result = copy.deepcopy(self.DEFAULT_CONFIG)
+        result = copy.deepcopy(self.DEFAULT_CONFIG if defaults is None else defaults)
         for key, value in loaded.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._merge_with_defaults(value)
+                result[key] = self._merge_with_defaults(value, result[key])
             else:
                 result[key] = value
         return result

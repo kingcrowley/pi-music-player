@@ -222,7 +222,7 @@ class SystemDetector:
                     return d
 
         # Check standard fields
-        for field in ["PRETTY_NAME", "VERSION", "NAME"]:
+        for field in ["pretty_name", "version", "name"]:
             if field in parsed:
                 value = parsed[field]
                 # Check if it contains one of our distro IDs
@@ -259,25 +259,14 @@ class SystemDetector:
         # Get the template name
         template_name = f"mpd.conf.{audio_backend}"
 
-        # Try to find the template relative to project root
-        template_path = f"configs/{template_name}"
-        if not __import__("os").path.exists(template_path):
-            # Fall back to bundled configs in this package directory
-            # Try relative to this module
-            import pathlib
-            module_dir = pathlib.Path(__file__).parent
-            template_path = module_dir / "configs" / template_name
-            if not template_path.exists():
-                # Last resort: use bundled configs alongside code
-                template_path = module_dir.parent / "configs" / template_name
-                if not template_path.exists():
-                    template_path = module_dir / "configs" / "mpd.conf.alsa"
+        # Resolve the template path from the module location
+        import pathlib
+        template_path = pathlib.Path(__file__).resolve().parent.parent / "configs" / template_name
 
-        # Read the template
         try:
             with open(template_path, "r") as f:
                 template = f.read()
-        except FileNotFoundError:
+        except OSError:
             template = self._generate_default_config(audio_backend)
 
         # Customize based on distro
@@ -334,6 +323,15 @@ input {{
 }}
 """
 
+    def get_mpd_config_template(self) -> str:
+        """Get the appropriate MPD config template name.
+
+        Returns:
+            str: Template name
+        """
+        audio_backend = self.detect_audio_backend()
+        return f"mpd.conf.{audio_backend}"
+
     def _customize_config(self, template: str, distro: str) -> str:
         """Customize the MPD config based on distribution.
 
@@ -387,11 +385,4 @@ input {{
         """
         return self.detect_distro()
 
-    def get_mpd_config_template(self) -> str:
-        """Public API: Get the MPD config template name.
-
-        Returns:
-            str: Template name
-        """
-        audio_backend = self.detect_audio_backend()
-        return f"mpd.conf.{audio_backend}"
+    

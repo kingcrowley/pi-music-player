@@ -6,7 +6,7 @@ Auto-detect runtime environment; generate appropriate MPD config with correct au
 ## Implementation Steps
 
 ### 1. Create `core/system.py` — SystemDetector Class
-- `detect_audio_backend()` → `'alsa' | 'pipewire' | 'pulse' | 'unknown'`
+- `detect_audio_backend()` → `'alsa' | 'pipewire' | 'pulse' | 'null'`
   - Check for PipeWire: `pipewire --version`, check `PIPEWIRE_SOCKET` env, check `pipewire` process
   - Check for PulseAudio: `pulseaudio --version`, check `PULSE_SERVER` env, check `pulseaudio` process
   - Default to ALSA on Linux

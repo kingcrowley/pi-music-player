@@ -23,7 +23,6 @@ audio_output {
     name        "PulseAudio Default"
 }
 
-auto_update        "no"
 
 input {
     timeout      "10"

@@ -23,7 +23,6 @@ audio_output {
     name        "Null Audio"
 }
 
-auto_update        "no"
 
 input {
     timeout      "10"

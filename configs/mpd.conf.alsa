@@ -34,7 +34,6 @@ audio_output {
 #     mixer_control "Master"
 # }
 
-auto_update        "no"
 
 input {
     timeout      "10"
