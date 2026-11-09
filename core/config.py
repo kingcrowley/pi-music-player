@@ -57,8 +57,14 @@ class Config:
             try:
                 with open(self.config_path, "r") as f:
                     loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    raise ValueError(
+                        f"Configuration file {self.config_path} does not contain a JSON object"
+                    )
                 # Merge with defaults to ensure all keys exist
                 return self._merge_with_defaults(loaded)
+            except ValueError:
+                raise
             except (json.JSONDecodeError, IOError) as e:
                 raise ValueError(f"Invalid or unreadable configuration file: {self.config_path}") from e
         return copy.deepcopy(self.DEFAULT_CONFIG)

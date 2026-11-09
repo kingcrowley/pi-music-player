@@ -12,7 +12,7 @@ import os
 import tempfile
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, mock_open
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -45,7 +45,7 @@ class Slice14TestCase(unittest.TestCase):
 
     @patch("core.system.subprocess.run")
     def test_detect_audio_backend_pipewire(self, mock_run):
-        """PipeWire is installed but idle still counts as active."""
+        """PipeWire process detected via ps output."""
         mock_run.side_effect = [
             # First call: ps aux
             subprocess.CompletedProcess(args=[], returncode=0, stdout="user   pipewire"),
@@ -156,19 +156,19 @@ class Slice14TestCase(unittest.TestCase):
 
     def test_detect_distro_debian(self):
         """Debian distro detected from /etc/os-release ID=debian."""
-        with patch("builtins.open", new_callable=lambda: __import__("io").StringIO(
+        with patch("builtins.open", mock_open(read_data=(
             "ID=debian\nVERSION_ID=\"12\"\nPRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\n"
             "ID_LIKE=debian\n"
-        )):
+        ))):
             detector = SystemDetector()
             distro = detector.detect_distro()
             check("Detect Debian from /etc/os-release", distro == "debian")
 
     def test_detect_distro_ubuntu(self):
         """Ubuntu distro detected via ID_LIKE."""
-        with patch("builtins.open", new_callable=lambda: __import__("io").StringIO(
+        with patch("builtins.open", mock_open(read_data=(
             "ID=ubuntu\nPRETTY_NAME=\"Ubuntu 24.04 LTS\"\nID_LIKE=debian\n"
-        )):
+        ))):
             detector = SystemDetector()
             distro = detector.detect_distro()
             check("Detect Ubuntu via ID_LIKE match", distro == "ubuntu")
@@ -176,19 +176,17 @@ class Slice14TestCase(unittest.TestCase):
     @patch("core.system.open", create=True)
     def test_detect_distro_unknown(self, mock_file):
         """Unknown distro when /etc/os-release doesn't match known IDs."""
-        mock_file.return_value.read.return_value = (
-            "ID=artiso\n"
-        )
+        mock_file.return_value.read.return_value = "ID=artiso\n"
         detector = SystemDetector()
         distro = detector.detect_distro()
         check("Detect unknown distro gracefully", distro == "unknown")
 
-    @patch("builtins.open", new_callable=lambda: __import__("io").StringIO(""))
-    def test_detect_distro_malformed(self, mock_file):
+    def test_detect_distro_malformed(self):
         """Handle malformed /etc/os-release with bare content."""
-        detector = SystemDetector()
-        distro = detector.detect_distro()
-        check("Handle empty /etc/os-release", distro == "unknown")
+        with patch("builtins.open", mock_open(read_data="")):
+            detector = SystemDetector()
+            distro = detector.detect_distro()
+            check("Handle empty /etc/os-release", distro == "unknown")
 
     # --- MPD Config Generation ---
 
@@ -277,9 +275,10 @@ class Slice14TestCase(unittest.TestCase):
         # Write a JSON array instead of object
         with open(config_path, "w") as f:
             f.write("[]")
-        cfg = Config(config_path)
-        result = cfg.update_detected_values("pipewire", "wayland", "fedora")
-        check("Non-dict system returns False instead of crash", result is False)
+        with self.assertRaises(ValueError):
+            cfg = Config(config_path)
+            # Should raise ValueError on non-dict config
+        check("Non-dict system config raises ValueError", True)
 
     def test_config_invalid_json(self):
         """Invalid JSON raises ValueError, not AttributeError."""
@@ -333,6 +332,11 @@ def run_all_tests():
     suite = loader.loadTestsFromTestCase(Slice14TestCase)
     runner = unittest.TextTestRunner(verbosity=1)
     result = runner.run(suite)
+
+    # Fail if any test failed
+    if not result.wasSuccessful():
+        print("\n[WARN] Slice 1.4: Unit tests failed")
+        return False
 
     total = len(RESULTS)
     passed = sum(1 for s, _ in RESULTS if s == "PASS")
