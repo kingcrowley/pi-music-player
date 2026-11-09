@@ -1,5 +1,5 @@
 """
-Slice 1.2 Test Script — Album Art Handler
+Slice 1.2 Test Script - Album Art Handler
 
 Usage on Raspberry Pi:
     python3 tests/test_artwork.py
@@ -26,9 +26,9 @@ RESULTS = []
 def check(name: str, condition: bool, detail: str = ""):
     """Record a test result."""
     status = "PASS" if condition else "FAIL"
-    mark = "✅" if condition else "❌"
+    mark = "PASS" if condition else "FAIL"
     RESULTS.append((status, name))
-    print(f"  [{mark}] {status}: {name}" + (f" — {detail}" if detail else ""))
+    print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
 
 
 def create_test_sidecar_art_files() -> str:
@@ -38,7 +38,7 @@ def create_test_sidecar_art_files() -> str:
     """
     tmpdir = tempfile.mkdtemp(prefix="artwork_test_")
 
-    # Create mock audio files (empty — we're testing cache logic)
+    # Create mock audio files (empty - we're testing cache logic)
     audio_files = [
         os.path.join(tmpdir, "track1.flac"),
         os.path.join(tmpdir, "track2.mp3"),
@@ -96,7 +96,7 @@ def create_mp3_with_apic(path: str, apic_data: bytes = None) -> str:
 def run_all_tests():
     """Run all Slice 1.2 acceptance tests."""
     print("=" * 60)
-    print("Slice 1.2: Album Art — Local Extraction")
+    print("Slice 1.2: Album Art - Local Extraction")
     print("=" * 60)
 
     tmpdirs = []
@@ -126,7 +126,7 @@ def run_all_tests():
         if art_path:
             check("Cached art file exists on disk", os.path.exists(art_path))
 
-        # Test 4: Cache hit — second call returns same path
+        # Test 4: Cache hit - second call returns same path
         art_path2 = cache.get_art(track1_path)
         check("Cache returns same result on second call",
               art_path2 == art_path)
@@ -146,7 +146,7 @@ def run_all_tests():
         check("MP3 with embedded APIC returns artwork",
               art_from_mp3 is not None, f"Art path: {art_from_mp3}")
 
-        # Test 5b: Verify it's from embedded frame, not sidecar — compare bytes
+        # Test 5b: Verify it's from embedded frame, not sidecar - compare bytes
         if art_from_mp3:
             # Read the extracted art file and compare with original APIC data
             with open(art_from_mp3, "rb") as f:
@@ -254,7 +254,7 @@ def run_all_tests():
         print(f"Results: {passed}/{total} tests passed")
 
         if passed == total:
-            print("\n🎯 Slice 1.2: ACCEPTANCE CRITERIA MET")
+            print("\nOK Slice 1.2: ACCEPTANCE CRITERIA MET")
             return True
         else:
             print(f"\n⚠️  Slice 1.2: {total - passed} test(s) need review")

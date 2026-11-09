@@ -211,7 +211,7 @@ class ArtworkCache:
             if sidecar_path.exists() and sidecar_path.suffix.lower() in [".jpg", ".jpeg"]:
                 # Derive unique filename from source path to prevent collisions
                 # when files in different dirs share the same stem
-                path_hash = hashlib.sha256(str(filepath).encode())[:12]
+                path_hash = hashlib.sha256(str(filepath).encode()).hexdigest()[:12]
                 cache_path = self.cache_dir / f"sidecar_{path_hash}.jpg"
                 try:
                     shutil.copy2(str(sidecar_path), str(cache_path))
@@ -221,13 +221,12 @@ class ArtworkCache:
 
         return None
 
-    def _save_artwork(self, mime_type: str, art_data: bytes, file_path: Optional[str] = None) -> Optional[str]:
+    def _save_artwork(self, mime_type: str, art_data: bytes) -> Optional[str]:
         """Save extracted artwork to cache directory.
 
         Args:
             mime_type: MIME type of the artwork (e.g., "image/jpeg", "image/png")
             art_data: Raw bytes of the artwork image
-            file_path: Optional path to the source audio file (for hash-based naming)
 
         Returns:
             Path to cached art file, or None if save failed
