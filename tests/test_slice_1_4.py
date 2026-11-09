@@ -46,14 +46,16 @@ def run_all_tests():
 
         # Test 2: Display server detection with force values
         print("\n--- Display Server Detection ---")
-        display_server = detector.detect_display_server()
+        detector_forced_display = SystemDetector(force_display_server="wayland")
+        display_server = detector_forced_display.detect_display_server()
         check("Display server detection returns valid value",
               display_server in ["x11", "wayland", "unknown"],
               f"Display: {display_server}")
 
         # Test 3: Distro detection with force values
         print("\n--- Distro Detection ---")
-        distro = detector.detect_distro()
+        detector_forced_distro = SystemDetector(force_distro="fedora")
+        distro = detector_forced_distro.detect_distro()
         check("Distro detection returns valid value",
               distro in ["debian", "ubuntu", "fedora", "arch", "alpine", "nixos", "unknown"],
               f"Distro: {distro}")
