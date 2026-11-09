@@ -82,7 +82,7 @@ class SystemDetector:
                 ["ps", "aux"], capture_output=True, text=True
             )
             pipewire_processes = [
-                p for p in result.split("\n")
+                p for p in result.stdout.split("\n")
                 if "pipewire" in p.lower()
             ]
             if pipewire_processes:
@@ -121,7 +121,7 @@ class SystemDetector:
                 ["ps", "aux"], capture_output=True, text=True
             )
             pulseaudio_processes = [
-                p for p in result.split("\n")
+                p for p in result.stdout.split("\n")
                 if "pulseaudio" in p.lower()
             ]
             if pulseaudio_processes:
@@ -129,7 +129,7 @@ class SystemDetector:
 
             # Check pulseaudio command availability
             result = subprocess.run(
-                ["pulseaudio --version"], capture_output=True, text=True, timeout=5
+                ["pulseaudio", "--version"], capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0 and result.stdout:
                 return "pulse"
