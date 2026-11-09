@@ -143,6 +143,8 @@ class Config:
         Returns:
             bool: True if updated successfully
         """
+        if not isinstance(self._config.get("system"), dict):
+            return False
         self._config["system"]["detected_audio_backend"] = audio_backend
         self._config["system"]["detected_display_server"] = display_server
         self._config["system"]["detected_distro"] = distro
