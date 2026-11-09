@@ -1,6 +1,6 @@
 """Configuration management for Pi Zero 2 W Music Player.
 
-Provides configuration loading, saving, and validation with
+Provides configuration loading and saving with
 detected values + user overrides.
 """
 
@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 
 class Config:
-    """Manages application configuration with defaults and validation."""
+    """Manages application configuration with defaults."""
 
     # Default configuration schema
     DEFAULT_CONFIG = {

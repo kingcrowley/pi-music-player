@@ -22,9 +22,3 @@ audio_output {
     type        "pulse"
     name        "PulseAudio Default"
 }
-
-
-input {
-    timeout      "10"
-    timeout_action "stop"
-}

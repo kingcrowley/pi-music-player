@@ -22,9 +22,3 @@ audio_output {
     type        "pipewire"
     name        "PipeWire Default"
 }
-
-
-input {
-    timeout      "10"
-    timeout_action "stop"
-}

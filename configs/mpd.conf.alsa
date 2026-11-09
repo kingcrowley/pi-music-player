@@ -33,9 +33,3 @@ audio_output {
 #     mixer_type  "software"
 #     mixer_control "Master"
 # }
-
-
-input {
-    timeout      "10"
-    timeout_action "stop"
-}

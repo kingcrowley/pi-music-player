@@ -22,9 +22,3 @@ audio_output {
     type        "null"
     name        "Null Audio"
 }
-
-
-input {
-    timeout      "10"
-    timeout_action "stop"
-}

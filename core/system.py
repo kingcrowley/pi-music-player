@@ -314,13 +314,6 @@ audio_output {{
     type        "{audio_backend}"
     name        "{audio_backend.title()} Default"
 }}
-
-auto_update        "no"
-
-input {{
-    timeout      "10"
-    timeout_action "stop"
-}}
 """
 
     def get_mpd_config_template(self) -> str:

@@ -9,7 +9,7 @@ Auto-detect runtime environment; generate appropriate MPD config with correct au
 - `detect_audio_backend()` → `'alsa' | 'pipewire' | 'pulse' | 'null'`
   - Check for PipeWire: `pipewire --version`, check `PIPEWIRE_SOCKET` env, check `pipewire` process
   - Check for PulseAudio: `pulseaudio --version`, check `PULSE_SERVER` env, check `pulseaudio` process
-  - Default to ALSA on Linux
+  - Default to ALSA on Linux (never returns 'unknown')
 - `detect_display_server()` → `'x11' | 'wayland' | 'unknown'`
   - Check `WAYLAND_DISPLAY` env var
   - Check `DISPLAY` env var for X11
@@ -34,7 +34,6 @@ Auto-detect runtime environment; generate appropriate MPD config with correct au
   - Schema with detected values + user overrides
   - Load/save to `config.json`
   - Defaults for all settings
-  - Validation of config values
 
 ### 4. Test Script
 - `tests/test_slice_1_4.py` - Test system detection and config generation
