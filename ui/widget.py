@@ -7,7 +7,7 @@ press visual feedback, and keyboard navigation support.
 import tkinter as tk
 from typing import Callable, Optional
 
-from core.styles import COLORS, FONTS, SPACING, TOUCH_TARGET_SIZE
+from ui.styles import COLORS, FONTS, SPACING, TOUCH_TARGET_SIZE
 
 
 class TouchWidget(tk.Canvas):
@@ -88,6 +88,8 @@ class TouchButton(TouchWidget):
         self._active_fg = active_fg
 
         super().__init__(parent, width=TOUCH_TARGET_SIZE, height=TOUCH_TARGET_SIZE, **kwargs)
+        # Apply normal background color immediately (CodeRabbit fix)
+        self.config(bg=self._normal_bg)
 
         self._text_id = self.create_text(
             TOUCH_TARGET_SIZE // 2,

@@ -10,7 +10,14 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any as CoreEngine, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Forward reference for type hints only - not imported at runtime
+    from typing import Any as CoreEngine
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +226,15 @@ def load_manifest(manifest_path: str) -> Optional[PluginManifest]:
     try:
         with open(manifest_path, "r") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, IOError, OSError) as e:
+    except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load plugin manifest from %s: %s", manifest_path, e)
+        return None
+    except ValueError as e:
+        logger.warning("Failed to load plugin manifest from %s: %s", manifest_path, e)
+        return None
+
+    if not isinstance(data, dict):
+        logger.warning("Invalid plugin manifest at %s: expected a JSON object", manifest_path)
         return None
 
     manifest = PluginManifest(data)
