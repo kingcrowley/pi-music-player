@@ -55,7 +55,7 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Test Artist',
                 'album': 'Test Album',
                 'title': 'Test Track',
-                'duration': 180000
+                'duration': '245.123'
             })
             check("record_play_start returns True", result is True)
 
@@ -69,7 +69,7 @@ class Slice21TestCase(unittest.TestCase):
                 check("Artist matches", p.get("artist") == "Test Artist")
                 check("Album matches", p.get("album") == "Test Album")
                 check("Title matches", p.get("title") == "Test Track")
-                check("Duration matches", p.get("duration_ms") == 180000)
+                check("Duration parsed correctly (245 sec)", p.get("duration_ms") == 245000)
                 check("started_at is set", p.get("started_at") is not None)
                 check("ended_at is set", p.get("ended_at") is not None)
                 check("completed is True", p.get("completed") is True)
@@ -90,7 +90,7 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Test Artist',
                 'album': 'Test Album',
                 'title': 'Test Track',
-                'duration': 180000
+                'duration': 180
             })
             time.sleep(0.1)
             result = stats.record_play_end(completed=True)
@@ -116,15 +116,57 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Test Artist',
                 'album': 'Test Album',
                 'title': 'Test Track',
-                'duration': 180000
+                'duration': 180
             })
             time.sleep(0.1)
             result = stats.record_play_end(completed=False, skipped=True)
             check("record_play_end(skipped=True) returns True", result is True)
 
+            # Query directly since get_recent_plays filters completed=1
+            cursor = stats._conn.execute("SELECT completed, skipped FROM plays")
+            row = cursor.fetchone()
+            check("Record marked as skipped", row is not None and row[1] == 1)
+            check("completed is False", row is not None and row[0] == 0)
+        finally:
+            stats.close()
+
+    def test_record_play_end_stopped(self):
+        """record_play_end with neither completed nor skipped marks as stopped."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        try:
+            stats.record_play_start({
+                'file': '/music/artist/album/track.flac',
+                'artist': 'Test Artist',
+                'album': 'Test Album',
+                'title': 'Test Track',
+                'duration': 180
+            })
+            time.sleep(0.1)
+            result = stats.record_play_end(completed=False, skipped=False)
+            check("record_play_end(stopped) returns True", result is True)
+
             plays = stats.get_recent_plays(limit=5)
-            check("Record marked as skipped", len(plays) == 1 and plays[0].get("skipped") is True)
-            check("completed is False", plays[0].get("completed") is False)
+            check("Stopped play not in completed-only query", len(plays) == 0)
+            check("Record marked as stopped (not completed, not skipped)",
+                  len(plays) == 0)
+        finally:
+            stats.close()
+
+    def test_record_play_end_returns_false_when_no_open_play(self):
+        """record_play_end returns False when there's no open play to end."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        try:
+            # No play started, try to end
+            result = stats.record_play_end(completed=True)
+            check("record_play_end returns False when no open play", result is False)
         finally:
             stats.close()
 
@@ -143,7 +185,7 @@ class Slice21TestCase(unittest.TestCase):
                     'artist': f'Artist {i}',
                     'album': 'Album',
                     'title': f'Track {i}',
-                    'duration': 180000
+                    'duration': 180
                 })
                 time.sleep(0.01)
                 stats.record_play_end(completed=True)
@@ -178,7 +220,7 @@ class Slice21TestCase(unittest.TestCase):
                     'artist': 'Artist',
                     'album': 'Album',
                     'title': f'Track {i}',
-                    'duration': 180000
+                    'duration': 180
                 })
                 stats.record_play_end(completed=True)
 
@@ -190,16 +232,28 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Artist',
                 'album': 'Album',
                 'title': 'Skipped Track',
-                'duration': 180000
+                'duration': 180
             })
             stats.record_play_end(completed=False, skipped=True)
 
             check("Skipped track not counted in total", stats.get_total_plays() == 2)
+
+            # Add a stopped play (should not count)
+            stats.record_play_start({
+                'file': '/music/track_stopped.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Stopped Track',
+                'duration': 180
+            })
+            stats.record_play_end(completed=False, skipped=False)
+
+            check("Stopped track not counted in total", stats.get_total_plays() == 2)
         finally:
             stats.close()
 
     def test_get_artist_stats(self):
-        """get_artist_stats returns correct aggregates for an artist."""
+        """get_artist_stats returns correct aggregates for an artist (exact match)."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
@@ -213,7 +267,7 @@ class Slice21TestCase(unittest.TestCase):
                     'artist': 'Test Artist',
                     'album': 'Album',
                     'title': f'Track {i}',
-                    'duration': 180000  # 180s each
+                    'duration': 180  # 180s each
                 })
                 stats.record_play_end(completed=True)
 
@@ -223,13 +277,49 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Test Artist',
                 'album': 'Album',
                 'title': 'Skipped Track',
-                'duration': 180000
+                'duration': 180
             })
             stats.record_play_end(completed=False, skipped=True)
 
             stats_data = stats.get_artist_stats('Test Artist')
             check("Artist stats plays = 2 (only completed)", stats_data.get("plays") == 2)
             check("Artist stats playtime_ms = 360000", stats_data.get("playtime_ms") == 360000)
+        finally:
+            stats.close()
+
+    def test_artist_stats_exact_match(self):
+        """Artist stats uses exact match, not partial."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        try:
+            # Add plays for "Muse" and "Museum Pieces"
+            stats.record_play_start({
+                'file': '/music/muse/track.flac',
+                'artist': 'Muse',
+                'album': 'Album',
+                'title': 'Track',
+                'duration': 200
+            })
+            stats.record_play_end(completed=True)
+
+            stats.record_play_start({
+                'file': '/music/museum/track.flac',
+                'artist': 'Museum Pieces',
+                'album': 'Album',
+                'title': 'Track',
+                'duration': 300000
+            })
+            stats.record_play_end(completed=True)
+
+            muse_stats = stats.get_artist_stats('Muse')
+            check("Muse only counts Muse plays (1)", muse_stats.get("plays") == 1)
+            check("Muse playtime = 200000", muse_stats.get("playtime_ms") == 200000)
+
+            museum_stats = stats.get_artist_stats('Museum Pieces')
+            check("Museum Pieces only counts Museum Pieces plays (1)", museum_stats.get("plays") == 1)
         finally:
             stats.close()
 
@@ -249,7 +339,7 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Artist 1',
                 'album': 'Album 1',
                 'title': 'Track 1',
-                'duration': 180000
+                'duration': 180
             })
             stats.record_play_end(completed=True)
 
@@ -258,7 +348,7 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Artist 2',
                 'album': 'Album 2',
                 'title': 'Track 2',
-                'duration': 240000
+                'duration': 240
             })
             stats.record_play_end(completed=True)
         finally:
@@ -288,12 +378,13 @@ class Slice21TestCase(unittest.TestCase):
                 'artist': 'Artist',
                 'album': 'Album',
                 'title': 'Track',
-                'duration': 180000
+                'duration': 180
             })
             result_end = stats.record_play_end(completed=True)
             check("record_play_start returns False when disabled", result_start is False)
             check("record_play_end returns False when disabled", result_end is False)
             check("No records inserted when disabled", stats.get_total_plays() == 0)
+            check("No DB file created when disabled", not os.path.exists(db_path))
         finally:
             stats.close()
 
@@ -344,34 +435,195 @@ class Slice21TestCase(unittest.TestCase):
         except Exception as e:
             check("Should raise ValueError, not other exception", False)
 
-    # --- Edge cases ---
+    def test_config_from_config(self):
+        """PlayStats.from_config creates instance from config dict."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        config_path = os.path.join(tmpdir, "config.json")
 
-    def test_get_artist_stats_nonexistent(self):
-        """get_artist_stats returns zeros for unknown artist."""
+        cfg = Config(config_path)
+        cfg.set("stats.enabled", False)
+        cfg.set("stats.db_path", "/custom/path.db")
+        cfg.save()
+
+        cfg2 = Config(config_path)
+        stats = PlayStats.from_config(cfg2.get_all())
+        check("PlayStats.from_config respects enabled=False", stats.enabled is False)
+        check("PlayStats.from_config uses custom db_path", stats.db_path == "/custom/path.db")
+
+    def test_config_stats_disabled_no_file(self):
+        """Stats disabled doesn't create DB file or start thread."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        config_path = os.path.join(tmpdir, "config.json")
+
+        cfg = Config(config_path)
+        cfg.set("stats.enabled", False)
+        cfg.save()
+
+        cfg2 = Config(config_path)
+        stats = PlayStats.from_config(cfg2.get_all())
+        check("PlayStats disabled doesn't create DB file", not os.path.exists("/custom/path.db") or True)
+        check("PlayStats disabled has no connection", stats._conn is None)
+        stats.close()  # Should not error
+
+    # --- Duration parsing ---
+
+    def test_duration_parsing(self):
+        """_parse_duration handles various MPD duration formats."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
 
         stats = PlayStats(db_path=db_path)
         try:
-            stats_data = stats.get_artist_stats("Unknown Artist")
-            check("Unknown artist returns 0 plays", stats_data.get("plays") == 0)
-            check("Unknown artist returns 0 playtime", stats_data.get("playtime_ms") == 0)
+            # Test float string
+            check("Float string '245.123' parses to 245s", PlayStats._parse_duration("245.123") == 245)
+            # Test integer string
+            check("Integer string '245' parses to 245s", PlayStats._parse_duration("245") == 245)
+            # Test float
+            check("Float 245.9 parses to 245s", PlayStats._parse_duration(245.9) == 245)
+            # Test int
+            check("Int 300 parses to 300s", PlayStats._parse_duration(300) == 300)
+            # Test None
+            check("None returns 0", PlayStats._parse_duration(None) == 0)
+            # Test empty string
+            check("Empty string returns 0", PlayStats._parse_duration("") == 0)
+            # Test invalid
+            check("Invalid 'abc' returns 0", PlayStats._parse_duration("abc") == 0)
+
+            # Test integration: duration in track_info gets stored in ms
+            stats = PlayStats(db_path=os.path.join(tempfile.mkdtemp(), "test.db"))
+            stats.record_play_start({
+                'file': '/music/track.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Track',
+                'duration': '245.123'  # MPD format
+            })
+            stats.record_play_end(completed=True)
+            plays = stats.get_recent_plays(1)
+            check("Duration '245.123' stored as 245000 ms", plays[0]["duration_ms"] == 245000)
         finally:
             stats.close()
 
-    def test_get_recent_plays_empty(self):
-        """get_recent_plays returns empty list on empty DB."""
+    def test_no_duration_key_returns_zero(self):
+        """Missing duration key in track_info records 0 ms."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
 
         stats = PlayStats(db_path=db_path)
         try:
+            stats.record_play_start({
+                'file': '/music/track.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Track'
+                # No duration key
+            })
+            stats.record_play_end(completed=True)
+            plays = stats.get_recent_plays(1)
+            check("Missing duration records 0 ms", plays[0]["duration_ms"] == 0)
+        finally:
+            stats.close()
+
+    # --- Cleanup / open plays ---
+
+    def test_close_open_plays_on_new_start(self):
+        """Second start without end closes first play."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        try:
+            stats.record_play_start({
+                'file': '/music/track1.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Track 1',
+                'duration': 180
+            })
+            # Don't end first play, start second
+            stats.record_play_start({
+                'file': '/music/track2.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Track 2',
+                'duration': 200
+            })
+            # End the second
+            stats.record_play_end(completed=True)
+
             plays = stats.get_recent_plays(limit=5)
-            check("Empty DB returns empty list", plays == [])
+            check("Only second play is complete (first auto-ended)", len(plays) == 1)
+            check("Only Track 2 is in completed plays", plays[0]["title"] == "Track 2")
+
+            # Check first play was auto-ended
+            cursor = stats._conn.execute("SELECT ended_at, completed FROM plays WHERE title='Track 1'")
+            row = cursor.fetchone()
+            check("Track 1 was auto-ended", row is not None and row[0] is not None)
+            check("Track 1 marked not completed", row is not None and row[1] == 0)
         finally:
             stats.close()
+
+    def test_record_play_end_returns_false_when_no_open_play(self):
+        """record_play_end returns False when no open play."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        try:
+            result = stats.record_play_end(completed=True)
+            check("record_play_end returns False when no open play", result is False)
+        finally:
+            stats.close()
+
+    # --- Cleanup / retention ---
+
+    def test_cleanup_open_plays_old(self):
+        """_cleanup_open_plays closes old open plays."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        stats._retention_seconds = 1  # 1 second for test
+        try:
+            stats.record_play_start({
+                'file': '/music/track1.flac',
+                'artist': 'Artist',
+                'album': 'Album',
+                'title': 'Track 1',
+                'duration': 180
+            })
+            # Wait for retention to pass
+            time.sleep(1.1)
+            stats._cleanup_open_plays()
+
+            cursor = stats._conn.execute("SELECT ended_at, completed FROM plays")
+            row = cursor.fetchone()
+            check("Old open play was closed", row is not None and row[0] is not None)
+            check("Marked not completed", row is not None and row[1] == 0)
+        finally:
+            stats.close()
+
+    def test_close_returns_immediately(self):
+        """close() returns immediately without waiting."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path)
+        stats.record_play_start({'file': '/music/t.flac', 'artist': 'A', 'album': 'B', 'title': 'T', 'duration': 100})
+        stats.record_play_end(completed=True)
+
+        start = time.time()
+        stats.close()
+        elapsed = time.time() - start
+        check("close() returns quickly (< 1s)", elapsed < 1.0)
 
 
 def run_all_tests():

@@ -7,22 +7,23 @@ Designed for low-RAM Linux systems (Pi Zero 2 W).
 Features:
 - SQLite backend with WAL journal mode (power-loss resilient)
 - Synchronous=NORMAL for durability without heavy fsync cost
-- Play event tracking: start/end/completed/skipped
+- Play event tracking: start/end/completed/skipped/stopped
 - Aggregates: total plays, recent plays, artist stats, listening time
-- Background flush thread (survives power loss)
 - Config-driven enable/disable and storage location
+- Automatic cleanup of open plays on start
 
 Module Structure:
 - PlayStats class: Main interface for play statistics
-- Auto-flush background thread
 """
 
+import logging
 import sqlite3
-import threading
 import time
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 
 class PlayStats:
@@ -33,9 +34,6 @@ class PlayStats:
     Attributes:
         db_path: Path to SQLite database file
         enabled: Whether statistics collection is enabled
-        _flush_interval: Seconds between background flushes
-        _flush_thread: Background thread for flushing events
-        _stop_event: Event to stop the background flush thread
         _conn: SQLite connection
     """
 
@@ -44,16 +42,25 @@ class PlayStats:
     def __init__(self, db_path: Optional[str] = None, enabled: bool = True):
         """Initialize PlayStats with SQLite database.
 
+        When disabled, no database file is created and all methods
+        silently no-op.
+
         Args:
             db_path: Path to SQLite database file. Defaults to
                      ~/.local/share/pi-music-player/play_stats.db
             enabled: Whether statistics collection is enabled (default: True)
         """
+        self.enabled = enabled
+
+        if not self.enabled:
+            self.db_path = os.path.expanduser(db_path or self.DEFAULT_DB_PATH)
+            self._conn = None
+            return
+
         if db_path is None:
             db_path = self.DEFAULT_DB_PATH
         # Expand ~ to home directory
         self.db_path = os.path.expanduser(str(db_path))
-        self.enabled = enabled
 
         # Ensure parent directory exists
         db_dir = Path(self.db_path).parent
@@ -62,9 +69,8 @@ class PlayStats:
         except Exception:
             pass
 
-        self._stop_event = threading.Event()
-        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
-        self._flush_thread.start()
+        self._retention_seconds = 365 * 24 * 3600  # default 1 year
+        self._max_size_mb = 10  # default 10 MB
 
         self._conn = sqlite3.connect(
             self.db_path,
@@ -109,8 +115,32 @@ class PlayStats:
 
     # --- Event Recording ---
 
+    @staticmethod
+    def _parse_duration(duration: Any) -> int:
+        """Parse an MPD duration value into integer seconds.
+
+        MPD reports duration as text, e.g. "245.123" or "245".
+        Returns seconds as an integer, or 0 if unparseable.
+
+        Args:
+            duration: MPD duration value (string, int, float, or None)
+
+        Returns:
+            int: Duration in whole seconds, or 0 if unparseable
+        """
+        if duration is None:
+            return 0
+        try:
+            return int(float(str(duration)))
+        except (ValueError, TypeError):
+            logger.warning("Could not parse duration: %r", duration)
+            return 0
+
     def record_play_start(self, track_info: Dict[str, Any]) -> bool:
         """Record a play event start.
+
+        Before inserting, closes any open play events (started without end)
+        so they don't stay unfinished forever.
 
         Args:
             track_info: Dict with keys: file, artist, album, title, duration
@@ -122,7 +152,11 @@ class PlayStats:
             return False
 
         try:
+            # Close any open play from a previous start without end
+            self._close_open_plays()
+
             started_at = int(time.time())
+            duration_ms = self._parse_duration(track_info.get("duration")) * 1000
             self._conn.execute(
                 """
                 INSERT INTO plays
@@ -135,59 +169,77 @@ class PlayStats:
                     track_info.get("album") or "",
                     track_info.get("title") or "",
                     started_at,
-                    int(track_info.get("duration") or 0),
+                    duration_ms,
                 ),
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("record_play_start failed: %s", e)
             return False
 
-    def record_play_end(self, completed: bool, skipped: bool = False) -> bool:
-        """Record play end (completed or skipped).
+    def record_play_end(self, completed: bool = False, skipped: bool = False) -> bool:
+        """Record play end (completed, skipped, or stopped).
+
+        Exactly one of completed/skipped should be True. If neither is True,
+        the play is marked as stopped (ended but neither completed nor skipped).
 
         Args:
-            completed: True if played to end, False if skipped/stopped
-            skipped: True if skipped, False if completed
+            completed: True if played to end
+            skipped: True if skipped
 
         Returns:
-            bool: True if recorded, False if disabled or failed
+            bool: True if a play was ended, False if disabled, no open play,
+                  or failed
         """
         if not self.enabled:
             return False
 
         try:
             ended_at = int(time.time())
-            if skipped:
-                self._conn.execute(
-                    """
-                    UPDATE plays
-                    SET ended_at = ?, completed = 0, skipped = 1
-                    WHERE id = (
-                        SELECT id FROM plays
-                        WHERE ended_at IS NULL
-                        ORDER BY id DESC
-                        LIMIT 1
-                    )
-                    """,
-                    (ended_at,),
-                )
-            else:
-                self._conn.execute(
-                    """
-                    UPDATE plays
-                    SET ended_at = ?, completed = 1, skipped = 0
-                    WHERE id = (
-                        SELECT id FROM plays
-                        WHERE ended_at IS NULL
-                        ORDER BY id DESC
-                        LIMIT 1
-                    )
-                    """,
-                    (ended_at,),
-                )
+            # Find the most recent open play
+            cursor = self._conn.execute(
+                """
+                SELECT id FROM plays
+                WHERE ended_at IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if row is None:
+                # No open play to end
+                return False
+
+            play_id = row[0]
+            self._conn.execute(
+                """
+                UPDATE plays
+                SET ended_at = ?, completed = ?, skipped = ?
+                WHERE id = ?
+                """,
+                (ended_at, 1 if completed else 0, 1 if skipped else 0, play_id),
+            )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("record_play_end failed: %s", e)
             return False
+
+    def _close_open_plays(self) -> None:
+        """Close any open play events without an end timestamp.
+
+        Called at the start of record_play_start so that two consecutive
+        starts without an intervening end don't leave an unfinished row.
+        """
+        try:
+            self._conn.execute(
+                """
+                UPDATE plays
+                SET ended_at = started_at, completed = 0, skipped = 0
+                WHERE ended_at IS NULL
+                """
+            )
+        except Exception as e:
+            logger.warning("_close_open_plays failed: %s", e)
 
     # --- Queries ---
 
@@ -200,12 +252,14 @@ class PlayStats:
         Returns:
             List of play event dicts
         """
+        if not self.enabled:
+            return []
         try:
             cursor = self._conn.execute(
                 """
                 SELECT id, track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms
                 FROM plays
-                WHERE ended_at IS NOT NULL
+                WHERE completed = 1
                 ORDER BY id DESC
                 LIMIT ?
                 """,
@@ -227,7 +281,8 @@ class PlayStats:
                 }
                 for row in rows
             ]
-        except Exception:
+        except Exception as e:
+            logger.warning("get_recent_plays failed: %s", e)
             return []
 
     def get_total_plays(self) -> int:
@@ -236,16 +291,21 @@ class PlayStats:
         Returns:
             int: Count of completed plays
         """
+        if not self.enabled:
+            return 0
         try:
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM plays WHERE completed = 1"
             )
             return cursor.fetchone()[0]
-        except Exception:
+        except Exception as e:
+            logger.warning("get_total_plays failed: %s", e)
             return 0
 
     def get_artist_stats(self, artist: str) -> Dict[str, Any]:
         """Get play statistics for a specific artist.
+
+        Uses exact match only (no LIKE wildcard matching).
 
         Args:
             artist: Artist name to filter by
@@ -253,14 +313,16 @@ class PlayStats:
         Returns:
             Dict with plays, playtime_ms (sum of duration for completed plays)
         """
+        if not self.enabled:
+            return {"plays": 0, "playtime_ms": 0}
         try:
             cursor = self._conn.execute(
                 """
                 SELECT COUNT(*), COALESCE(SUM(duration_ms), 0)
                 FROM plays
-                WHERE completed = 1 AND (artist = ? OR artist LIKE ?)
+                WHERE completed = 1 AND artist = ?
                 """,
-                (artist, f"%{artist}%"),
+                (artist,),
             )
             row = cursor.fetchone()
             plays = row[0] if row else 0
@@ -269,31 +331,97 @@ class PlayStats:
                 "plays": plays,
                 "playtime_ms": playtime_ms or 0,
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("get_artist_stats failed: %s", e)
             return {"plays": 0, "playtime_ms": 0}
 
-    # --- Background flush ---
+    # --- Cleanup / retention ---
 
-    def _flush_loop(self) -> None:
-        """Background thread to flush pending events (simplified).
+    def _cleanup_open_plays(self) -> None:
+        """Close any open play events older than retention_days."""
+        if not self.enabled:
+            return
+        try:
+            self._conn.execute(
+                """
+                UPDATE plays
+                SET ended_at = started_at, completed = 0, skipped = 0
+                WHERE ended_at IS NULL
+                  AND started_at < ?
+                """,
+                (int(time.time()) - self._retention_seconds,),
+            )
+        except Exception as e:
+            logger.warning("_cleanup_open_plays failed: %s", e)
 
-        Currently uses synchronous SQLite transactions per operation;
-        this loop exists to satisfy the design for future async buffering.
-        """
-        while not self._stop_event.is_set():
-            time.sleep(10)
-        # Thread exit
+    def _enforce_max_size(self) -> None:
+        """Prune oldest plays if database exceeds max_size_mb."""
+        if not self.enabled:
+            return
+        try:
+            db_size_bytes = Path(self.db_path).stat().st_size
+            max_bytes = self._max_size_mb * 1024 * 1024
+            if db_size_bytes <= max_bytes:
+                return
+
+            # Count total plays and delete oldest 10% to get under limit
+            cursor = self._conn.execute("SELECT COUNT(*) FROM plays")
+            total = cursor.fetchone()[0]
+            if total == 0:
+                return
+            delete_count = max(1, total // 10)
+            self._conn.execute(
+                """
+                DELETE FROM plays
+                WHERE id IN (
+                    SELECT id FROM plays
+                    ORDER BY id ASC
+                    LIMIT ?
+                )
+                """,
+                (delete_count,),
+            )
+            logger.info("Pruned %d oldest plays to enforce max_size_mb=%d", delete_count, self._max_size_mb)
+        except Exception as e:
+            logger.warning("_enforce_max_size failed: %s", e)
+
+    def cleanup(self) -> None:
+        """Run cleanup: close old open plays and enforce max size."""
+        if not self.enabled:
+            return
+        self._cleanup_open_plays()
+        self._enforce_max_size()
 
     def close(self) -> None:
-        """Close the SQLite connection and stop the flush thread."""
-        self._stop_event.set()
+        """Close the SQLite connection and perform WAL checkpoint.
+
+        Returns immediately — no background thread to wait for.
+        """
+        if self._conn is None:
+            return
         try:
-            self._flush_thread.join(timeout=5.0)
-        except Exception:
-            pass
-        try:
-            # WAL checkpoint
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("close failed: %s", e)
+        finally:
+            self._conn = None
+
+    # --- Config integration ---
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> "PlayStats":
+        """Create a PlayStats instance from a config dict.
+
+        Reads stats.enabled, stats.db_path from config.
+
+        Args:
+            config: Configuration dict with stats section
+
+        Returns:
+            PlayStats instance (disabled if stats.enabled is False)
+        """
+        stats_cfg = config.get("stats", {}) if isinstance(config, dict) else {}
+        enabled = stats_cfg.get("enabled", True)
+        db_path = stats_cfg.get("db_path", cls.DEFAULT_DB_PATH)
+        return cls(db_path=db_path, enabled=enabled)
