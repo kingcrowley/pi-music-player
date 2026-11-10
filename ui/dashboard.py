@@ -13,8 +13,8 @@ from typing import Optional, Dict, Any
 from core.config import Config
 from core.player import MusicPlayer
 from core.artwork import ArtworkCache
-from core.styles import COLORS, FONTS, SPACING, WINDOW
-from core.widget import (
+from ui.styles import COLORS, FONTS, SPACING, WINDOW
+from ui.widget import (
     TouchButton,
     ProgressBar,
     AlbumArtLabel,
