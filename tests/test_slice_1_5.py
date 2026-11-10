@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.styles import TOUCH_TARGET_SIZE, COLORS, FONTS, SPACING, WINDOW
+from ui.styles import TOUCH_TARGET_SIZE, COLORS, FONTS, SPACING, WINDOW
 from core.plugin_base import MusicPlayerPlugin, PluginManifest, load_manifest, load_plugin_class
 from plugins import PluginManager
 
@@ -219,17 +219,29 @@ class Slice15TestCase(unittest.TestCase):
     # --- PluginBase Tests ---
 
     def test_plugin_base_abstract_instantiation(self):
-        """Test that Plugin base class cannot be instantiated directly."""
+        """Test that Plugin base class can be subclassed and instantiated."""
         import tkinter as tk
         from core.plugin_base import MusicPlayerPlugin
 
         root = tk.Tk()
         try:
-            plugin = MusicPlayerPlugin.__new__(MusicPlayerPlugin)
-            check("MusicPlayerPlugin can be instantiated via __new__", True)
+
+            class TestPlugin(MusicPlayerPlugin):
+                def initialize(self, core):
+                    self.core = core
+                    self._set_initialized(True)
+                    return True
+
+            plugin = TestPlugin(config={"name": "Test", "version": "1.0.0"})
+            check("Plugin subclass instantiates", plugin.name == "Test")
+            check("Plugin version correct", plugin.version == "1.0.0")
+            check("Plugin initialized False initially", plugin.initialized is False)
+            check("Plugin initialize works", plugin.initialize(root))
+            check("Plugin initialized True after init", plugin.initialized is True)
+            root.destroy()
         except Exception as e:
-            check("MusicPlayerPlugin instantiation works", False, str(e))
-        root.destroy()
+            check("Plugin subclass instantiation works", False, str(e))
+            root.destroy()
 
     # --- PluginManifest Tests ---
 
