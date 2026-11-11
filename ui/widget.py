@@ -269,12 +269,21 @@ class VolumeSlider(TouchWidget):
         # Use configured size since winfo_width/height() returns 0 before widget is shown
         w = width if orientation == "horizontal" else height
         h = height if orientation == "horizontal" else width
-        self._track_id = self.create_rectangle(
-            0, h // 2 - 4,
-            w, h // 2 + 4,
-            fill=self._track_color,
-            outline="",
-        )
+        # Draw track in selected orientation
+        if orientation == "horizontal":
+            self._track_id = self.create_rectangle(
+                0, h // 2 - 4,
+                w, h // 2 + 4,
+                fill=self._track_color,
+                outline="",
+            )
+        else:  # vertical
+            self._track_id = self.create_rectangle(
+                w // 2 - 4, 0,
+                w // 2 + 4, h,
+                fill=self._track_color,
+                outline="",
+            )
         self._thumb_id = self.create_rectangle(
             0, h // 2 - 10,
             0, h // 2 + 10,
@@ -295,8 +304,15 @@ class VolumeSlider(TouchWidget):
             self._command(max(0.0, min(1.0, fraction)))
 
     def _update_thumb_position(self) -> None:
-        w = self.winfo_width() or self.winfo_reqwidth()
-        h = self.winfo_height() or self.winfo_reqheight()
+        # Use requested/configured dimensions; winfo_width/height() can return 1
+        # before the widget is mapped, which would place the thumb at the edge.
+        # Treat a dimension of 1 as uninitialized and use the requested size.
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 1:
+            w = self.winfo_reqwidth()
+        if h <= 1:
+            h = self.winfo_reqheight()
         if self._orientation == "horizontal":
             x = int(w * self._volume)
             self.coords(self._thumb_id, x - 10, h // 2 - 10, x + 10, h // 2 + 10)
