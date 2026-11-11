@@ -20,7 +20,6 @@ from ui.widget import (
     AlbumArtLabel,
     VolumeSlider,
     StatusLabel,
-    clear_art,
 )
 
 logger = logging.getLogger(__name__)
