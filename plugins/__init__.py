@@ -41,7 +41,7 @@ class PluginManager:
 
     def __init__(
         self,
-        core_engine: Any,
+        core_engine: Any = None,
         plugin_dir: str = "plugins",
     ):
         """Initialize PluginManager.
@@ -97,14 +97,26 @@ class PluginManager:
 
         for plugin_dir_path in plugin_dirs:
             try:
-                self.load_plugin_from_dir(plugin_dir_path)
-                loaded_count += 1
+                result = self.load_plugin_from_dir(plugin_dir_path)
+                if result is not None:
+                    loaded_count += 1
             except Exception as e:
                 logger.error(
                     "Failed to load plugin from %s: %s", plugin_dir_path, e
                 )
 
         return loaded_count
+
+    def load_plugins(self) -> int:
+        """Discover and load all plugins from plugin_dir.
+
+        Convenience alias for load_all_plugins(), kept for backward
+        compatibility with callers and documentation.
+
+        Returns:
+            int: Number of plugins successfully loaded.
+        """
+        return self.load_all_plugins()
 
     def load_plugin_from_dir(self, plugin_dir_path: Path) -> Optional[MusicPlayerPlugin]:
         """Load a single plugin from a directory containing config.json.
