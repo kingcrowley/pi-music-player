@@ -341,15 +341,19 @@ class StatusLabel(TouchWidget):
         self._state_color = COLORS["muted"]
         self._text_id = None
 
+        # Use configured size since winfo_width/height() returns 1 before widget is mapped
+        width = TOUCH_TARGET_SIZE * 3
+        height = TOUCH_TARGET_SIZE
+
         super().__init__(
             parent,
-            width=TOUCH_TARGET_SIZE * 3,
-            height=TOUCH_TARGET_SIZE,
+            width=width,
+            height=height,
             **kwargs,
         )
         self._text_id = self.create_text(
-            self.winfo_width() // 2,
-            self.winfo_height() // 2,
+            width // 2,
+            height // 2,
             text=text,
             font=FONTS["status"],
             fill=self._state_color,

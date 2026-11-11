@@ -5,6 +5,7 @@ and status indicator. Polls MPD every 1s and updates UI via root.after().
 """
 
 import logging
+import os
 import threading
 import time
 import tkinter as tk
@@ -21,6 +22,52 @@ from ui.widget import (
     VolumeSlider,
     StatusLabel,
 )
+
+
+def _get_mpd_music_dir(config: Config) -> str:
+    """Get MPD music directory from config or default.
+
+    Reads /etc/mpd.conf directly since `mpc config` is not a valid command.
+    Falls back to default if config file is not found.
+    """
+    try:
+        with open("/etc/mpd.conf", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("music_directory"):
+                    parts = line.split('"')
+                    if len(parts) >= 2:
+                        return parts[1]
+    except FileNotFoundError:
+        pass
+    # Fallback to default
+    return "/mnt/nas/music"
+
+
+def _resolve_song_path(song_file: str, music_dir: str) -> str:
+    """Resolve a song file path against the MPD music directory.
+
+    MPD returns file paths relative to the configured music_directory.
+    Stream URLs (http://, https://, etc.) are returned unchanged.
+    This function resolves relative paths to absolute filesystem paths.
+
+    Args:
+        song_file: Relative path from MPD (e.g., "Artist/Album/Track.flac")
+        music_dir: Absolute path to MPD music directory
+
+    Returns:
+        Absolute filesystem path to the audio file, or stream URL unchanged
+    """
+    if not song_file:
+        return ""
+    # Skip stream URLs - they should not be resolved as local paths
+    if song_file.startswith(("http://", "https://", "ftp://", "rtsp://")):
+        return song_file
+    # If already absolute, return as-is
+    if os.path.isabs(song_file):
+        return song_file
+    # Resolve relative to music directory
+    return os.path.join(music_dir, song_file)
 
 logger = logging.getLogger(__name__)
 
@@ -158,15 +205,6 @@ class Dashboard(tk.Tk):
         controls_frame = tk.Frame(self, bg=COLORS["bg"])
         controls_frame.grid(row=4, column=0, pady=SPACING["lg"])
 
-        btn_config = {
-            "width": TOUCH_TARGET_SIZE,
-            "height": TOUCH_TARGET_SIZE,
-            "font": FONTS["button"],
-            "bg": COLORS["card_bg"],
-            "fg": COLORS["fg"],
-            "active_bg": COLORS["accent"],
-        }
-
         self.prev_button = TouchButton(
             controls_frame,
             text="⏮",
@@ -223,11 +261,11 @@ class Dashboard(tk.Tk):
 
     def _on_seek(self, fraction: float) -> None:
         """Handle progress bar seek."""
-        if self._current_song and self._current_song.get("duration"):
-            duration_ms = self._current_song.get("duration", 0)
-            if duration_ms > 0:
-                target_ms = int(fraction * duration_ms)
-                self.music_player.seek(target_ms / 1000.0)
+        status = self.music_player.get_status()
+        duration = float(status.get("duration", 0))
+        if duration > 0:
+            target_seconds = fraction * duration
+            self.music_player.seek(target_seconds)
 
     # --- Polling Loop ---
 
@@ -255,17 +293,34 @@ class Dashboard(tk.Tk):
         except Exception as e:
             logger.warning("Fetch error: %s", e)
 
+    @staticmethod
+    def _map_mpd_state(state: str) -> str:
+        """Map MPD state strings to StatusLabel state names.
+
+        MPD uses: play, pause, stopped (and others like play, pause, stop)
+        StatusLabel accepts: playing, paused, stopped, connecting, unknown
+        """
+        mapping = {
+            "play": "playing",
+            "pause": "paused",
+            "stop": "stopped",
+            "stopped": "stopped",
+            "pause": "paused",
+            "play": "playing",
+        }
+        return mapping.get(state, "unknown")
+
     def _update_ui(self, status: Dict[str, Any], song: Dict[str, Any]) -> None:
         """Update UI elements on main thread."""
         # Update status
-        state = status.get("state", "unknown")
+        state = self._map_mpd_state(status.get("state", "unknown"))
         self.status_label.set_state(state)
 
         # Update play/pause button
-        if state == "play":
+        if state == "playing":
             self.play_pause_button.set_text("⏸")
             self.status_label.set_state("playing")
-        elif state == "pause":
+        elif state == "paused":
             self.play_pause_button.set_text("▶")
             self.status_label.set_state("paused")
         else:
@@ -295,6 +350,9 @@ class Dashboard(tk.Tk):
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
+            # Redraw placeholder if album art area was cleared and no art loaded
+            if self._current_art is None and self.album_art._image_id is None:
+                self.album_art._draw_placeholder()
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS or HH:MM:SS."""
@@ -320,14 +378,14 @@ class Dashboard(tk.Tk):
         def fetch_art():
             file_path = song.get("file", "")
             if not file_path:
-                self.after(0, lambda: self.album_art._draw_placeholder())
+                self.after(0, self.album_art.clear_art)
                 return
 
-            # Resolve absolute path
-            from core.player import MusicPlayer
-            # We need to resolve the path relative to MPD music directory
-            # For now, assume the cache can handle it
-            art_path = self.artwork_cache.get_art(file_path)
+            # Resolve absolute path using core.player._resolve_song_path logic
+            music_dir = _get_mpd_music_dir(self.config)
+            abs_file_path = _resolve_song_path(file_path, music_dir)
+
+            art_path = self.artwork_cache.get_art(abs_file_path)
             if art_path:
                 try:
                     from PIL import Image, ImageTk
@@ -337,9 +395,9 @@ class Dashboard(tk.Tk):
                     self.after(0, lambda: self.album_art.set_art(photo))
                 except Exception as e:
                     logger.warning("Failed to load album art: %s", e)
-                    self.after(0, lambda: self.album_art._draw_placeholder())
+                    self.after(0, self.album_art.clear_art)
             else:
-                self.after(0, lambda: self.album_art._draw_placeholder())
+                self.after(0, self.album_art.clear_art)
 
         self._art_fetch_thread = threading.Thread(target=fetch_art, daemon=True)
         self._art_fetch_thread.start()
