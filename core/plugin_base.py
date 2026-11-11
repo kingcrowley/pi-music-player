@@ -55,7 +55,7 @@ class MusicPlayerPlugin(ABC):
         Returns:
             bool: True if initialization succeeded, False otherwise.
         """
-        pass
+        return False
 
     def shutdown(self) -> None:
         """Shutdown plugin gracefully.
@@ -128,6 +128,18 @@ class MusicPlayerPlugin(ABC):
         """
         if self.core and hasattr(self.core, "trigger_hook"):
             self.core.trigger_hook(event_name, *args, **kwargs)
+
+    def get_registered_hooks(self) -> Dict[str, List[Callable]]:
+        """Return hooks registered by this plugin.
+
+        Called by PluginManager during load to register declared hooks
+        with the manager. Returns an empty dict by default since plugins
+        must register hooks via register_hook().
+
+        Returns:
+            Dict mapping event name to list of callbacks.
+        """
+        return {event: list(cbs) for event, cbs in getattr(self, "_plugin_hooks", {}).items()}
 
     @property
     def initialized(self) -> bool:
@@ -226,10 +238,7 @@ def load_manifest(manifest_path: str) -> Optional[PluginManifest]:
     try:
         with open(manifest_path, "r") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to load plugin manifest from %s: %s", manifest_path, e)
-        return None
-    except ValueError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError) as e:
         logger.warning("Failed to load plugin manifest from %s: %s", manifest_path, e)
         return None
 

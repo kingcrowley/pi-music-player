@@ -59,6 +59,11 @@ class PluginManager:
         self.plugins_metadata: Dict[str, PluginManifest] = {}
         self.hooks: Dict[str, List[Callable]] = defaultdict(list)
         self._enabled: Dict[str, bool] = {}
+        # Track source directories so reload_plugin works even when the
+        # directory name differs from the manifest plugin_id.
+        self._plugin_dirs: Dict[str, Path] = {}
+        # Track per-plugin hook callbacks so unload can clean them up.
+        self._plugin_hooks: Dict[str, Dict[str, List[Callable]]] = defaultdict(dict)
 
     # --- Discovery ---
 
@@ -89,6 +94,9 @@ class PluginManager:
     def load_all_plugins(self) -> int:
         """Discover and load all plugins from plugin_dir.
 
+        Honors each manifest's `auto_load` flag: plugins with
+        `auto_load: false` are skipped.
+
         Returns:
             int: Number of plugins successfully loaded.
         """
@@ -97,6 +105,10 @@ class PluginManager:
 
         for plugin_dir_path in plugin_dirs:
             try:
+                manifest = load_manifest(str(plugin_dir_path / "config.json"))
+                if manifest is not None and not manifest.auto_load:
+                    logger.debug("Skipping auto-disabled plugin: %s", manifest.plugin_id)
+                    continue
                 result = self.load_plugin_from_dir(plugin_dir_path)
                 if result is not None:
                     loaded_count += 1
@@ -173,12 +185,16 @@ class PluginManager:
         self.plugins[plugin_id] = plugin_instance
         self.plugins_metadata[plugin_id] = manifest
         self._enabled[plugin_id] = True
+        # Remember the source directory for reload_plugin
+        self._plugin_dirs[plugin_id] = plugin_dir_path
 
         # Register any hooks the plugin declared
         if hasattr(plugin_instance, "get_registered_hooks"):
             hooks = plugin_instance.get_registered_hooks()
+            plugin_hooks = self._plugin_hooks[plugin_id]
             for event_name, callback in hooks.items():
                 self.register_hook(event_name, callback)
+                plugin_hooks.setdefault(event_name, []).append(callback)
 
         logger.info("Loaded plugin: %s v%s (%s)", plugin_id, manifest.version, manifest.type)
         return plugin_instance
@@ -336,6 +352,9 @@ class PluginManager:
         except Exception as e:
             logger.warning("Error shutting down plugin %s: %s", plugin_id, e)
 
+        # Remove plugin's hook callbacks
+        self._plugin_hooks.pop(plugin_id, None)
+
         del self.plugins[plugin_id]
         del self.plugins_metadata[plugin_id]
         del self._enabled[plugin_id]
@@ -396,16 +415,24 @@ class PluginManager:
     def trigger_hook(self, event_name: str, *args, **kwargs) -> None:
         """Trigger all callbacks registered for an event.
 
+        Only triggers hooks for plugins that are currently enabled.
+
         Args:
             event_name: Event name string.
             *args: Positional arguments for callbacks.
             **kwargs: Keyword arguments for callbacks.
         """
-        for callback in self.hooks.get(event_name, []):
-            try:
-                callback(*args, **kwargs)
-            except Exception as e:
-                logger.warning("Hook %s failed: %s", event_name, e)
+        enabled_ids = {
+            pid for pid, enabled in self._enabled.items() if enabled and pid in self.plugins
+        }
+        for plugin_id, plugin_hooks in self._plugin_hooks.items():
+            if plugin_id not in enabled_ids:
+                continue
+            for callback in plugin_hooks.get(event_name, []):
+                try:
+                    callback(*args, **kwargs)
+                except Exception as e:
+                    logger.warning("Hook %s failed: %s", event_name, e)
 
     def unregister_hook(self, event_name: str, callback: Callable) -> bool:
         """Remove a hook callback.
@@ -453,6 +480,16 @@ class PluginManager:
                 "initialized": plugin.initialized if plugin else False,
             })
         return result
+
+
+def shutdown_all(self) -> None:
+        """Shutdown and unload all plugins.
+
+        Calls shutdown() on each loaded plugin and removes their hook
+        callbacks. Should be called when the core engine exits.
+        """
+        for plugin_id in list(self.plugins.keys()):
+            self.unload_plugin(plugin_id)
 
 
 __all__ = [

@@ -1,8 +1,11 @@
 """
-Low-Resource Linux Music Player — Main Entry Point (Slice 1.2)
+Low-Resource Linux Music Player — Main Entry Point (Slice 1.5)
 
-Minimal bootstrap. Core engine and UI come later per phase plan.
-For now: test MPD connection and album art extraction.
+Bootstrap: creates MusicPlayer, Config, ArtworkCache and PluginManager,
+then launches the Tkinter Dashboard.
+
+Usage:
+    python3 main.py
 """
 
 import sys
@@ -14,9 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.player import MusicPlayer
 from core.artwork import ArtworkCache
+from core.config import Config
+from plugins import PluginManager
+from ui.dashboard import run_dashboard
 
 
-def _get_mpd_music_dir() -> str:
+def _get_mpd_music_dir(config: Config) -> str:
     """Get MPD music directory from config or default.
 
     Reads /etc/mpd.conf directly since `mpc config` is not a valid command.
@@ -27,7 +33,6 @@ def _get_mpd_music_dir() -> str:
             for line in f:
                 line = line.strip()
                 if line.startswith("music_directory"):
-                    # Parse: music_directory "/mnt/nas/music"
                     parts = line.split('"')
                     if len(parts) >= 2:
                         return parts[1]
@@ -63,68 +68,53 @@ def _resolve_song_path(song_file: str, music_dir: str) -> str:
     return os.path.join(music_dir, song_file)
 
 
-def main():
-    """Entry point for Slice 1.2 testing."""
+def main() -> int:
+    """Entry point for Slice 1.5 — Tkinter Touch UI + Plugin System."""
     print("=" * 50)
     print("Low-Resource Linux Music Player")
-    print("Slice 1.2: Album Art Handler")
+    print("Slice 1.5: Tkinter Touch UI & Plugin System")
     print("=" * 50)
+
+    # Load configuration
+    config = Config()
+    print(f"\nConfig loaded: {config.config_path}")
 
     # Connect to MPD
     player = MusicPlayer()
     connected = player.connect()
 
     print(f"\nConnection status: {connected}")
-
-    # Test album art extraction
-    print("\n--- Album Art Test ---")
-    cache = ArtworkCache(max_size_mb=5)
-
-    # Get current song's art
-    song = player.get_current_song() if connected else {}
-    if song and song.get("file"):
-        print(f"\nCurrent song: {song.get('artist', 'Unknown')} - {song.get('title', 'Unknown')}")
-
-        # Resolve the song file path against MPD music directory
-        music_dir = _get_mpd_music_dir()
-        abs_file_path = _resolve_song_path(song["file"], music_dir)
-
-        print(f"Resolved file path: {abs_file_path}")
-
-        if os.path.exists(abs_file_path):
-            art_path = cache.get_art(abs_file_path)
-            if art_path:
-                print(f"Album art: {art_path}")
-                print(f"  Size: {os.path.getsize(art_path)} bytes")
-            else:
-                print("No album art found for current track")
-    else:
-        print("No song currently playing")
-
-    # Test MPD playback
-    if connected:
-        input("\nPress Enter to toggle play...")
-        player.toggle_play()
-        time.sleep(2)
-        print("Status after toggle:", player.get_status()["state"])
-
-        input("Press Enter to go to next track...")
-        player.next()
-        time.sleep(1)
-        print("Next song:", player.get_current_song())
-
-        player.set_volume(50)
-        print("Volume set to:", player.get_status()["volume"])
-
-        input("Press Enter to stop playback...")
-        player.stop()
-        print("Final status:", player.get_status())
-    else:
+    if not connected:
         print("❌ Could not connect to MPD. Is MPD running?")
         print("   On Pi: sudo systemctl start mpd")
         return 1
 
-    print("\n✅ Slice 1.2 test complete!")
+    # Create artwork cache
+    cache = ArtworkCache(
+        max_size_mb=config.get("cache.artwork_max_size_mb", 50),
+    )
+    print(f"Artwork cache ready: {cache.cache_dir}")
+
+    # Create plugin manager
+    plugin_mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+    plugin_mgr.load_plugins()
+    print(f"Plugins loaded: {len(plugin_mgr.get_all_plugins())}")
+
+    # Launch dashboard
+    print("\nLaunching dashboard...")
+    run_dashboard(
+        music_player=player,
+        artwork_cache=cache,
+        config=config,
+        fullscreen=config.get("ui.fullscreen", True),
+    )
+
+    # Cleanup
+    plugin_mgr.shutdown_all()
+    cache.close()
+    player.disconnect()
+
+    print("\n✅ Slice 1.5 test complete!")
     return 0
 
 
