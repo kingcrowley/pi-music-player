@@ -43,8 +43,14 @@ class TouchWidget(tk.Canvas):
         self._apply_visual_feedback(True)
 
     def _on_release(self, event):
+        was_pressed = self._is_pressed
         self._is_pressed = False
         self._apply_visual_feedback(False)
+        return was_pressed
+
+    def is_pressed(self) -> bool:
+        """Return whether this widget is currently pressed."""
+        return self._is_pressed
 
     def _on_leave(self, event):
         self._is_pressed = False
@@ -107,8 +113,9 @@ class TouchButton(TouchWidget):
         self.itemconfig(self._text_id, fill=fg, font=self._font)
 
     def _on_release(self, event):
+        was_pressed = self._is_pressed
         super()._on_release(event)
-        if self._is_pressed and self._command:
+        if was_pressed and self._command:
             self._command()
 
     def set_text(self, text: str) -> None:
@@ -217,14 +224,20 @@ class AlbumArtLabel(TouchWidget):
             anchor="center",
         )
 
+    def clear_art(self) -> None:
+        """Remove all artwork and show placeholder."""
+        self.delete("all")
+        self._art_image = None
+        self._image_id = None
+        self._draw_placeholder()
+
     def set_art(self, image: object) -> None:
         """Set album art image.
 
         Args:
             image: PIL Image or PhotoImage object to display.
         """
-        if self._image_id:
-            self.delete(self._image_id)
+        self.clear_art()
         self._art_image = image  # Keep reference to prevent GC
         self._image_id = self.create_image(
             self._size // 2,

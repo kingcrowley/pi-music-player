@@ -13,13 +13,14 @@ from typing import Optional, Dict, Any
 from core.config import Config
 from core.player import MusicPlayer
 from core.artwork import ArtworkCache
-from ui.styles import COLORS, FONTS, SPACING, WINDOW
+from ui.styles import COLORS, FONTS, SPACING, WINDOW, TOUCH_TARGET_SIZE
 from ui.widget import (
     TouchButton,
     ProgressBar,
     AlbumArtLabel,
     VolumeSlider,
     StatusLabel,
+    clear_art,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,43 +169,28 @@ class Dashboard(tk.Tk):
         }
 
         self.prev_button = TouchButton(
-            self,
+            controls_frame,
             text="⏮",
             command=self._on_prev,
-            **{k: v for k, v in {"width": TOUCH_TARGET_SIZE, "height": TOUCH_TARGET_SIZE}.items()},
         )
-        self.prev_button._normal_bg = COLORS["card_bg"]
-        self.prev_button._normal_fg = COLORS["fg"]
-        self.prev_button._active_bg = COLORS["accent"]
-        self.prev_button._active_fg = COLORS["fg"]
-        self.prev_button._text_id = self.prev_button.create_text(
-            TOUCH_TARGET_SIZE // 2,
-            TOUCH_TARGET_SIZE // 2,
-            text="⏮",
-            font=FONTS["button"],
-            fill=COLORS["fg"],
-            anchor="center",
-        )
-        self.prev_button.config(bg=COLORS["card_bg"], highlightthickness=0)
-        self.prev_button.itemconfig(self.prev_button._text_id, text="⏮", fill=COLORS["fg"])
         self.prev_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.play_pause_button = TouchButton(
-            self,
+            controls_frame,
             text="▶",
             command=self._on_play_pause,
         )
         self.play_pause_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.stop_button = TouchButton(
-            self,
+            controls_frame,
             text="⏹",
             command=self._on_stop,
         )
         self.stop_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.next_button = TouchButton(
-            self,
+            controls_frame,
             text="⏭",
             command=self._on_next,
         )
@@ -279,8 +265,13 @@ class Dashboard(tk.Tk):
         # Update play/pause button
         if state == "play":
             self.play_pause_button.set_text("⏸")
+            self.status_label.set_state("playing")
+        elif state == "pause":
+            self.play_pause_button.set_text("▶")
+            self.status_label.set_state("paused")
         else:
             self.play_pause_button.set_text("▶")
+            self.status_label.set_state("stopped")
 
         # Update volume
         volume = int(status.get("volume", 0))
@@ -300,7 +291,8 @@ class Dashboard(tk.Tk):
 
         # Check for song change
         song_file = song.get("file", "")
-        if song_file != self._current_song.get("file", "") if self._current_song else True:
+        previous_file = None if self._current_song is None else self._current_song.get("file", "")
+        if song_file != previous_file:
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
