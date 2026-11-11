@@ -19,16 +19,6 @@ from ui.styles import TOUCH_TARGET_SIZE, COLORS, FONTS, SPACING, WINDOW
 from core.plugin_base import MusicPlayerPlugin, PluginManifest, load_manifest, load_plugin_class
 from plugins import PluginManager
 
-RESULTS = []
-
-
-def check(name: str, condition: bool, detail: str = ""):
-    """Record a test result."""
-    status = "PASS" if condition else "FAIL"
-    mark = "PASS" if condition else "FAIL"
-    RESULTS.append((status, name))
-    print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
-
 
 class Slice15TestCase(unittest.TestCase):
     """Unit tests for Slice 1.5 (Styles, Components, Plugin System)."""
@@ -43,24 +33,24 @@ class Slice15TestCase(unittest.TestCase):
     # --- Styles Constants ---
 
     def test_styles_constants_exist(self):
-        check("TOUCH_TARGET_SIZE == 48", TOUCH_TARGET_SIZE == 48)
-        check("COLORS has bg", "bg" in COLORS)
-        check("COLORS has fg", "fg" in COLORS)
-        check("COLORS has accent", "accent" in COLORS)
-        check("COLORS has warning", "warning" in COLORS)
+        self.assertTrue(TOUCH_TARGET_SIZE == 48, "TOUCH_TARGET_SIZE == 48")
+        self.assertTrue("bg" in COLORS, "COLORS has bg")
+        self.assertTrue("fg" in COLORS, "COLORS has fg")
+        self.assertTrue("accent" in COLORS, "COLORS has accent")
+        self.assertTrue("warning" in COLORS, "COLORS has warning")
 
     def test_fonts_constants_exist(self):
-        check("FONTS has title", "title" in FONTS)
-        check("FONTS has artist", "artist" in FONTS)
-        check("FONTS has album", "album" in FONTS)
+        self.assertTrue("title" in FONTS, "FONTS has title")
+        self.assertTrue("artist" in FONTS, "FONTS has artist")
+        self.assertTrue("album" in FONTS, "FONTS has album")
 
     def test_spacing_constants_exist(self):
-        check("SPACING has xs", "xs" in SPACING)
-        check("SPACING has lg", "lg" in SPACING)
+        self.assertTrue("xs" in SPACING, "SPACING has xs")
+        self.assertTrue("lg" in SPACING, "SPACING has lg")
 
     def test_window_defaults_exist(self):
-        check("WINDOW has fullscreen", "fullscreen" in WINDOW)
-        check("WINDOW has min_width", "min_width" in WINDOW)
+        self.assertTrue("fullscreen" in WINDOW, "WINDOW has fullscreen")
+        self.assertTrue("min_width" in WINDOW, "WINDOW has min_width")
 
     # --- TouchButton Component ---
 
@@ -73,9 +63,8 @@ class Slice15TestCase(unittest.TestCase):
             btn.pack()
             root.update()
             root.destroy()
-            check("TouchButton creation does not crash", True)
         except Exception as e:
-            check("TouchButton creation works", False, str(e))
+            self.assertTrue(False, f"TouchButton creation works: {e}")
             root.destroy()
 
     def test_album_art_placeholder(self):
@@ -87,10 +76,10 @@ class Slice15TestCase(unittest.TestCase):
             widget.pack()
             root.update()
             canvas_width = widget.winfo_width()
-            check("AlbumArtLabel has non-zero width", canvas_width > 0)
+            self.assertTrue(canvas_width > 0, "AlbumArtLabel has non-zero width")
             root.destroy()
         except Exception as e:
-            check("AlbumArtLabel creation works", False, str(e))
+            self.assertTrue(False, f"AlbumArtLabel creation works: {e}")
             root.destroy()
 
     def test_progress_bar_seek(self):
@@ -103,10 +92,8 @@ class Slice15TestCase(unittest.TestCase):
             root.update()
             pb.set_progress(0.5)
             root.update()
-            check("ProgressBar set_progress works", True)
-            root.destroy()
         except Exception as e:
-            check("ProgressBar set_progress works", False, str(e))
+            self.assertTrue(False, f"ProgressBar set_progress works: {e}")
             root.destroy()
 
     def test_progressbar_seek_callback(self):
@@ -121,10 +108,8 @@ class Slice15TestCase(unittest.TestCase):
             pb = ProgressBar(root, width=200, height=20)
             pb.set_seek_callback(on_seek)
             root.update()
-            check("Seek callback registration works", True)
-            root.destroy()
         except Exception as e:
-            check("Seek callback registration works", False, str(e))
+            self.assertTrue(False, f"Seek callback registration works: {e}")
             root.destroy()
 
     def test_volumeslider_creation(self):
@@ -135,10 +120,8 @@ class Slice15TestCase(unittest.TestCase):
             vs = VolumeSlider(root, orientation="horizontal")
             vs.pack()
             root.update()
-            check("VolumeSlider creation does not crash", True)
-            root.destroy()
         except Exception as e:
-            check("VolumeSlider creation works", False, str(e))
+            self.assertTrue(False, f"VolumeSlider creation does not crash: {e}")
             root.destroy()
 
     def test_volumeslider_set_volume(self):
@@ -149,10 +132,8 @@ class Slice15TestCase(unittest.TestCase):
             vs = VolumeSlider(root, orientation="horizontal")
             vs.set_volume(0.5)
             root.update()
-            check("VolumeSlider set_volume works", True)
-            root.destroy()
         except Exception as e:
-            check("VolumeSlider set_volume works", False, str(e))
+            self.assertTrue(False, f"VolumeSlider set_volume works: {e}")
             root.destroy()
 
     def test_statuslabel_creation(self):
@@ -162,59 +143,66 @@ class Slice15TestCase(unittest.TestCase):
             from ui.widget import StatusLabel
             sl = StatusLabel(root, text="Test")
             root.update()
-            check("StatusLabel creation does not crash", True)
-            root.destroy()
         except Exception as e:
-            check("StatusLabel creation works", False, str(e))
+            self.assertTrue(False, f"StatusLabel creation does not crash: {e}")
             root.destroy()
 
     # --- Plugin System ---
 
     def test_plugin_manager_instantiate(self):
-        mgr = PluginManager(root=None, plugin_dir="plugins")
-        check("PluginManager instantiates", mgr is not None)
+        mgr = PluginManager(core_engine=None, plugin_dir="plugins")
+        self.assertTrue(mgr is not None, "PluginManager instantiates")
 
     def test_plugin_manager_basic(self):
         import tkinter as tk
         root = tk.Tk()
-        mgr = PluginManager(root, plugin_dir="plugins")
-        check("PluginManager creates successfully", mgr is not None)
-        mgr.load_plugins()
-        check("PluginManager handles missing plugins gracefully", True)
-        root.destroy()
+        try:
+            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            self.assertTrue(mgr is not None, "PluginManager creates successfully")
+            mgr.load_plugins()
+        finally:
+            root.destroy()
 
     def test_plugin_manager_load_nonexistent(self):
         import tkinter as tk
         root = tk.Tk()
-        mgr = PluginManager(root, plugin_dir="plugins")
-        result = mgr.load_plugin("nonexistent_plugin")
-        check("Loading nonexistent plugin returns None", result is None)
-        root.destroy()
+        try:
+            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            result = mgr.load_plugin("nonexistent_plugin")
+            self.assertTrue(result is None, "Loading nonexistent plugin returns None")
+        finally:
+            root.destroy()
 
     def test_plugin_manager_unload_nonexistent(self):
         import tkinter as tk
         root = tk.Tk()
-        mgr = PluginManager(root, plugin_dir="plugins")
-        result = mgr.unload_plugin("nonexistent_plugin")
-        check("Unloading nonexistent plugin returns False", result is False)
-        root.destroy()
+        try:
+            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            result = mgr.unload_plugin("nonexistent_plugin")
+            self.assertTrue(result is False, "Unloading nonexistent plugin returns False")
+        finally:
+            root.destroy()
 
     def test_plugin_manager_get_plugin(self):
         import tkinter as tk
         root = tk.Tk()
-        mgr = PluginManager(root, plugin_dir="plugins")
-        result = mgr.get_plugin("nonexistent")
-        check("Getting nonexistent plugin returns None", result is None)
-        root.destroy()
+        try:
+            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            result = mgr.get_plugin("nonexistent")
+            self.assertTrue(result is None, "Getting nonexistent plugin returns None")
+        finally:
+            root.destroy()
 
     def test_plugin_manager_get_all_plugins_empty(self):
         import tkinter as tk
         root = tk.Tk()
-        mgr = PluginManager(root, plugin_dir="plugins")
-        mgr.load_plugins()
-        plugins = mgr.get_all_plugins()
-        check("PluginManager returns empty list when no plugins", plugins == [])
-        root.destroy()
+        try:
+            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            mgr.load_plugins()
+            plugins = mgr.get_all_plugins()
+            self.assertTrue(plugins == [], "PluginManager returns empty list when no plugins")
+        finally:
+            root.destroy()
 
     # --- PluginBase Tests ---
 
@@ -233,14 +221,19 @@ class Slice15TestCase(unittest.TestCase):
                     return True
 
             plugin = TestPlugin(config={"name": "Test", "version": "1.0.0"})
-            check("Plugin subclass instantiates", plugin.name == "Test")
-            check("Plugin version correct", plugin.version == "1.0.0")
-            check("Plugin initialized False initially", plugin.initialized is False)
-            check("Plugin initialize works", plugin.initialize(root))
-            check("Plugin initialized True after init", plugin.initialized is True)
+            self.assertTrue(plugin.name == "Test", "Plugin subclass instantiates")
+            self.assertTrue(plugin.version == "1.0.0", "Plugin version correct")
+            self.assertTrue(plugin.initialized is False, "Plugin initialized False initially")
+            self.assertTrue(plugin.initialize(root), "Plugin initialize works")
+            self.assertTrue(plugin.initialized is True, "Plugin initialized True after init")
+
+            # Abstract base class itself cannot be instantiated directly
+            with self.assertRaises(TypeError):
+                MusicPlayerPlugin(config={})
+
             root.destroy()
         except Exception as e:
-            check("Plugin subclass instantiation works", False, str(e))
+            self.assertTrue(False, f"Plugin subclass instantiation works: {e}")
             root.destroy()
 
     # --- PluginManifest Tests ---
@@ -254,9 +247,9 @@ class Slice15TestCase(unittest.TestCase):
             "capabilities": ["test-cap"],
         }
         manifest = PluginManifest(manifest_data)
-        check("PluginManifest creates successfully", manifest is not None)
-        check("Manifest plugin_id correct", manifest.plugin_id == "test-plugin")
-        check("Manifest name correct", manifest.name == "Test Plugin")
+        self.assertTrue(manifest is not None, "PluginManifest creates successfully")
+        self.assertTrue(manifest.plugin_id == "test-plugin", "Manifest plugin_id correct")
+        self.assertTrue(manifest.name == "Test Plugin", "Manifest name correct")
 
     def test_plugin_manifest_is_valid(self):
         manifest_data = {
@@ -266,12 +259,12 @@ class Slice15TestCase(unittest.TestCase):
             "type": "feature",
         }
         manifest = PluginManifest(manifest_data)
-        check("Manifest is valid", manifest.is_valid())
+        self.assertTrue(manifest.is_valid(), "Manifest is valid")
 
     def test_plugin_manifest_missing_required(self):
         manifest_data = {"name": "Test Plugin"}  # missing plugin_id, version, type
         manifest = PluginManifest(manifest_data)
-        check("Manifest with missing required fields is invalid", not manifest.is_valid())
+        self.assertTrue(not manifest.is_valid(), "Manifest with missing required fields is invalid")
 
     def test_load_manifest_from_file(self):
         import json
@@ -289,8 +282,8 @@ class Slice15TestCase(unittest.TestCase):
             json.dump(manifest_data, f)
 
         manifest = load_manifest(manifest_path)
-        check("load_manifest loads valid manifest", manifest is not None)
-        check("Manifest name matches", manifest.name == "Test Plugin")
+        self.assertTrue(manifest is not None, "load_manifest loads valid manifest")
+        self.assertTrue(manifest.name == "Test Plugin", "Manifest name matches")
 
     def test_load_manifest_invalid_json(self):
         import json
@@ -301,16 +294,16 @@ class Slice15TestCase(unittest.TestCase):
             f.write("{invalid json")
 
         manifest = load_manifest(manifest_path)
-        check("load_manifest handles invalid JSON", manifest is None)
+        self.assertTrue(manifest is None, "load_manifest handles invalid JSON")
 
     def test_load_plugin_class_from_module(self):
         import tkinter as tk
         root = tk.Tk()
         try:
             cls = load_plugin_class("core.plugin_base", "MusicPlayerPlugin")
-            check("load_plugin_class loads MusicPlayerPlugin", cls is not None)
+            self.assertTrue(cls is not None, "load_plugin_class loads MusicPlayerPlugin")
         except Exception as e:
-            check("load_plugin_class works", False, str(e))
+            self.assertTrue(False, f"load_plugin_class works: {e}")
         root.destroy()
 
 
@@ -325,15 +318,11 @@ def run_all_tests():
     runner = unittest.TextTestRunner(verbosity=1)
     result = runner.run(suite)
 
-    total = len(RESULTS)
-    passed = sum(1 for s, _ in RESULTS if s == "PASS")
-    print(f"\nResults: {passed}/{total} checks passed")
-
-    if passed == total:
+    if result.wasSuccessful():
         print("\n[OK] Slice 1.5: ACCEPTANCE CRITERIA MET")
         return True
     else:
-        print(f"\n[WARN] Slice 1.5: {total - passed} check(s) failed")
+        print(f"\n[WARN] Slice 1.5: {len(result.failures) + len(result.errors)} check(s) failed")
         return False
 
 
