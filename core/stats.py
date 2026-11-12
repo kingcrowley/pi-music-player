@@ -404,7 +404,7 @@ class PlayStats:
                     SELECT album,
                            SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
                     FROM plays
-                    WHERE completed = 1 AND artist = ?
+                    WHERE (completed = 1 OR skipped = 1) AND artist = ?
                     GROUP BY album
                     ORDER BY pct DESC
                     """,
@@ -417,7 +417,7 @@ class PlayStats:
                     SELECT artist,
                            SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
                     FROM plays
-                    WHERE completed = 1
+                    WHERE completed = 1 OR skipped = 1
                     GROUP BY artist
                     ORDER BY pct DESC
                     """
@@ -450,12 +450,22 @@ class PlayStats:
             rows = cursor.fetchall()
             heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
             for started_at, duration_ms in rows:
-                dt = time.localtime(started_at)
-                day = dt.tm_wday  # 0=Mon
-                hour = dt.tm_hour
-                minutes = duration_ms // 60000
-                if minutes > 0:
-                    heatmap[day][hour] = heatmap[day].get(hour, 0) + minutes
+                # Distribute play time across all hours it overlaps
+                remaining_ms = duration_ms
+                current_ts = started_at
+                while remaining_ms > 0:
+                    dt = time.localtime(current_ts)
+                    day = dt.tm_wday  # 0=Mon
+                    hour = dt.tm_hour
+                    # Seconds remaining in this hour
+                    sec_in_hour = 3600 - (current_ts % 3600)
+                    ms_in_this_hour = min(remaining_ms, sec_in_hour * 1000)
+                    if ms_in_this_hour > 0:
+                        minutes = ms_in_this_hour // 60000
+                        if minutes > 0:
+                            heatmap[day][hour] = heatmap[day].get(hour, 0) + minutes
+                    remaining_ms -= ms_in_this_hour
+                    current_ts += ms_in_this_hour / 1000.0
             return heatmap
         except Exception as e:
             logger.warning("get_listening_time_heatmap failed: %s", e)
@@ -629,7 +639,8 @@ class PlayStats:
     def from_config(cls, config: Dict[str, Any]) -> "PlayStats":
         """Create a PlayStats instance from a config dict.
 
-        Reads stats.enabled, stats.db_path from config.
+        Reads stats.enabled, stats.db_path, stats.max_size_mb,
+        stats.retention_days, and stats.reset from config.
 
         Args:
             config: Configuration dict with stats section
@@ -640,4 +651,35 @@ class PlayStats:
         stats_cfg = config.get("stats", {}) if isinstance(config, dict) else {}
         enabled = stats_cfg.get("enabled", True)
         db_path = stats_cfg.get("db_path", cls.DEFAULT_DB_PATH)
-        return cls(db_path=db_path, enabled=enabled)
+        max_size_mb = stats_cfg.get("max_size_mb", 10)
+        retention_days = stats_cfg.get("retention_days", 365)
+        stats_reset = stats_cfg.get("reset", False)
+
+        instance = cls(db_path=db_path, enabled=enabled)
+        instance._max_size_mb = max_size_mb
+        instance._retention_seconds = retention_days * 24 * 3600
+
+        # One-time reset: clear all stored plays and consume the flag
+        if stats_reset and enabled:
+            instance.reset_stats()
+            # Clear the reset flag so later launches preserve history
+            stats_cfg["reset"] = False
+
+        return instance
+
+    def reset_stats(self) -> bool:
+        """Clear all play history from the database.
+
+        Returns:
+            bool: True if reset succeeded, False if disabled or error.
+        """
+        if not self.enabled:
+            return False
+        try:
+            self._conn.execute("DELETE FROM plays")
+            self._conn.execute("DELETE FROM sqlite_sequence WHERE name = 'plays'")
+            logger.info("Play statistics reset")
+            return True
+        except Exception as e:
+            logger.warning("reset_stats failed: %s", e)
+            return False

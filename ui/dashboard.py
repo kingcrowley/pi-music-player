@@ -116,8 +116,8 @@ class Dashboard(tk.Tk):
         self._showing_stats = False
         self._stats: Optional[PlayStats] = None
         if config is not None:
-            # Create PlayStats from config if available
-            self._stats = PlayStats.from_config(config.config)
+            # Create PlayStats from config mapping via Config.get_all()
+            self._stats = PlayStats.from_config(config.get_all())
 
         # Build UI
         self._build_ui()
@@ -264,18 +264,41 @@ class Dashboard(tk.Tk):
 
     def _on_play_pause(self) -> None:
         """Toggle play/pause."""
+        # Record the previous play end if transitioning from play to pause
+        if self._stats is not None and self._stats.enabled:
+            try:
+                status = self.music_player.get_status()
+                if status.get("state") == "play":
+                    self._stats.record_play_end(completed=False)
+            except Exception:
+                pass
         self.music_player.toggle_play()
 
     def _on_stop(self) -> None:
         """Stop playback."""
+        if self._stats is not None and self._stats.enabled:
+            try:
+                self._stats.record_play_end(completed=False)
+            except Exception:
+                pass
         self.music_player.stop()
 
     def _on_prev(self) -> None:
         """Previous track."""
+        if self._stats is not None and self._stats.enabled:
+            try:
+                self._stats.record_play_end(skipped=True)
+            except Exception:
+                pass
         self.music_player.previous()
 
     def _on_next(self) -> None:
         """Next track."""
+        if self._stats is not None and self._stats.enabled:
+            try:
+                self._stats.record_play_end(skipped=True)
+            except Exception:
+                pass
         self.music_player.next()
 
     def _on_volume_change(self, volume: float) -> None:
@@ -319,6 +342,9 @@ class Dashboard(tk.Tk):
 
     def _toggle_stats(self) -> None:
         """Toggle between now-playing view and statistics screen."""
+        # Don't open an empty Stats screen when statistics are disabled
+        if self._stats is None or not self._stats.enabled:
+            return
         self._showing_stats = not self._showing_stats
         if self._showing_stats:
             self._show_stats_view()
@@ -334,7 +360,7 @@ class Dashboard(tk.Tk):
         self.time_volume_frame.grid_remove()
         self.controls_frame.grid_remove()
         self.status_label.grid_remove()
-        self.stats_button.config(text="← Back")
+        self.stats_button.set_text("← Back")
 
         # Create stats frame if needed
         if self._stats_frame is None:
@@ -352,7 +378,7 @@ class Dashboard(tk.Tk):
         self.time_volume_frame.grid()
         self.controls_frame.grid()
         self.status_label.grid()
-        self.stats_button.config(text="📊")
+        self.stats_button.set_text("📊")
 
         # Hide stats frame
         if self._stats_frame is not None:
@@ -375,9 +401,22 @@ class Dashboard(tk.Tk):
             bg=COLORS["bg"],
         ).pack(pady=SPACING["sm"])
 
-        # Content frame
-        self._stats_content = tk.Frame(self._stats_frame, bg=COLORS["bg"])
-        self._stats_content.pack(fill=tk.BOTH, expand=True, padx=SPACING["md"], pady=SPACING["md"])
+        # Content frame with canvas for scrolling
+        stats_canvas = tk.Canvas(self._stats_frame, bg=COLORS["bg"], highlightthickness=0)
+        v_scrollbar = tk.Scrollbar(self._stats_frame, orient=tk.VERTICAL, command=stats_canvas.yview)
+        stats_canvas.configure(yscrollcommand=v_scrollbar.set)
+
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        stats_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=SPACING["md"], pady=SPACING["md"])
+
+        self._stats_content = tk.Frame(stats_canvas, bg=COLORS["bg"])
+        stats_canvas.create_window((0, 0), window=self._stats_content, anchor="nw")
+
+        # Update scroll region when content changes
+        def _on_content_configure(event):
+            stats_canvas.configure(scrollregion=stats_canvas.bbox("all"))
+
+        self._stats_content.bind("<Configure>", _on_content_configure)
 
         # Back button
         TouchButton(
@@ -466,6 +505,15 @@ class Dashboard(tk.Tk):
                         text=f"Exported to: {csv_path}",
                         font=FONTS["status"],
                         fg=COLORS["warning"],
+                        bg=COLORS["bg"],
+                        justify=tk.LEFT,
+                    ).pack(pady=SPACING["xs"])
+                else:
+                    tk.Label(
+                        self._stats_content,
+                        text="Export failed: check disk space/permissions",
+                        font=FONTS["status"],
+                        fg=COLORS["danger"],
                         bg=COLORS["bg"],
                         justify=tk.LEFT,
                     ).pack(pady=SPACING["xs"])
@@ -561,6 +609,12 @@ class Dashboard(tk.Tk):
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
+            # Record play start for stats (Slice 2.2)
+            if self._stats is not None and self._stats.enabled:
+                try:
+                    self._stats.record_play_start(song)
+                except Exception as e:
+                    logger.warning("record_play_start failed: %s", e)
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS or HH:MM:SS."""
