@@ -428,6 +428,11 @@ class PluginManager:
 
         Only triggers hooks for plugins that are currently enabled.
 
+        Iterates over a snapshot of _plugin_hooks so that if a callback
+        calls unload_plugin() during dispatch, the dictionary size change
+        does not raise RuntimeError. Also skips any plugin that has been
+        unloaded (removed from self.plugins) before its turn.
+
         Args:
             event_name: Event name string.
             *args: Positional arguments for callbacks.
@@ -436,8 +441,8 @@ class PluginManager:
         enabled_ids = {
             pid for pid, enabled in self._enabled.items() if enabled and pid in self.plugins
         }
-        for plugin_id, plugin_hooks in self._plugin_hooks.items():
-            if plugin_id not in enabled_ids:
+        for plugin_id, plugin_hooks in list(self._plugin_hooks.items()):
+            if plugin_id not in enabled_ids or plugin_id not in self.plugins:
                 continue
             for callback in plugin_hooks.get(event_name, []):
                 try:
