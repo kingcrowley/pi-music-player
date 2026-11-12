@@ -69,6 +69,7 @@ def _resolve_song_path(song_file: str, music_dir: str) -> str:
     # Resolve relative to music directory
     return os.path.join(music_dir, song_file)
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -262,12 +263,37 @@ class Dashboard(tk.Tk):
         self.music_player.set_volume(int(volume * 100))
 
     def _on_seek(self, fraction: float) -> None:
-        """Handle progress bar seek."""
-        status = self.music_player.get_status()
-        duration = float(status.get("duration", 0))
-        if duration > 0:
-            target_seconds = fraction * duration
-            self.music_player.seek(target_seconds)
+        """Handle progress bar seek.
+
+        Dispatch the seek to a background thread so MPD connection retries
+        do not block the Tk event handler. The seek effect is immediate via
+        MPD; UI is refreshed on the next poll iteration.
+        """
+
+        def _seek() -> None:
+            try:
+                status = self.music_player.get_status()
+                duration = float(status.get("duration", 0))
+                if duration > 0:
+                    target_seconds = fraction * duration
+                    self.music_player.seek(target_seconds)
+            except Exception as e:
+                logger.warning("Seek error: %s", e)
+            # Schedule UI refresh on Tk thread
+            self.after(0, self._refresh_ui)
+
+        thread = threading.Thread(target=_seek, daemon=True)
+        thread.start()
+
+    def _refresh_ui(self) -> None:
+        """Refresh UI on Tk thread after a background seek."""
+        # Force a poll to pick up the new position immediately.
+        try:
+            status = self.music_player.get_status()
+            song = self.music_player.get_current_song()
+            self._update_ui(status, song)
+        except Exception as e:
+            logger.warning("Refresh error: %s", e)
 
     # --- Polling Loop ---
 
