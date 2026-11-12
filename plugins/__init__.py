@@ -442,7 +442,11 @@ class PluginManager:
             pid for pid, enabled in self._enabled.items() if enabled and pid in self.plugins
         }
         for plugin_id, plugin_hooks in list(self._plugin_hooks.items()):
-            if plugin_id not in enabled_ids or plugin_id not in self.plugins:
+            if (
+                plugin_id not in enabled_ids
+                or plugin_id not in self.plugins
+                or self._plugin_hooks.get(plugin_id) is not plugin_hooks
+            ):
                 continue
             for callback in plugin_hooks.get(event_name, []):
                 try:
