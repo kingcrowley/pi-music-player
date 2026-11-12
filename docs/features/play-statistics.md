@@ -54,7 +54,9 @@ Statistics are enabled by default. To disable:
 ```json
 // config.json
 {
-  "stats_enabled": false
+  "stats": {
+    "enabled": false
+  }
 }
 ```
 
@@ -63,7 +65,9 @@ To clear all statistics:
 ```json
 // config.json
 {
-  "stats_reset": true    // Set once, app will reset on startup
+  "stats": {
+    "reset": true    // Set once, app will reset on startup
+  }
 }
 ```
 
@@ -105,7 +109,7 @@ Open in any spreadsheet application (Excel, LibreOffice Calc, Google Sheets).
 ### Database Location
 
 - **Default:** `~/.local/share/pi-music-player/play_stats.db`
-- **Custom:** Set `stats_db_path` in `config.json`
+- **Custom:** Set `stats.db_path` in `config.json`
 
 ### Max Size
 
@@ -113,8 +117,9 @@ The database is automatically capped:
 
 ```json
 {
-  "stats_max_size_mb": 10,
-  "stats_vacuum_interval_days": 30
+  "stats": {
+    "max_size_mb": 10
+  }
 }
 ```
 
@@ -124,7 +129,9 @@ When stats exceed max size, oldest records are pruned:
 
 ```json
 {
-  "stats_retention_days": 365   // Keep 1 year of play history
+  "stats": {
+    "retention_days": 365   // Keep 1 year of play history
+  }
 }
 ```
 
@@ -167,13 +174,14 @@ stats.record_play_start({
 stats.record_play_end(completed=True, skipped=False)
 
 # Query statistics
-stats.get_top_artists(limit=10)
-stats.get_top_albums(limit=10)
-stats.get_most_played_tracks(limit=10)
-stats.get_skip_rate(artist='Test Artist')
-stats.get_recent_plays(limit=20)
 stats.get_total_plays()
-stats.get_listening_time_by_hour()
+stats.get_artist_stats(artist='Test Artist')
+stats.get_artist_playcounts()          # Slice 2.2
+stats.get_album_playcounts()           # Slice 2.2
+stats.get_skip_rate()                   # Slice 2.2
+stats.get_listening_time_heatmap()      # Slice 2.2
+stats.get_recent_history(limit=20)      # Slice 2.2
+stats.export_csv()                      # Slice 2.2
 ```
 
 ### Integration with Player
@@ -184,6 +192,18 @@ Statistics are automatically recorded when:
 2. **Track ends normally** → `record_play_end(completed=True)`
 3. **User skips track** → `record_play_end(completed=False, skipped=True)`
 4. **User stops playback** → `record_play_end(completed=False)`
+
+### Stats Screen (Slice 2.2)
+
+Access from the main UI by tapping the **📊** button on the Now Playing screen. The Stats screen shows:
+
+- **Top Artists** — ranked by play count
+- **Top Albums** — ranked by play count
+- **Skip Rate** — percentage of skipped plays per artist/album
+- **Listening Time Heatmap** — minutes by day of week and hour of day
+- **Export CSV** — download all play data as a CSV file
+
+The Stats screen is a separate view toggled on/off; the Now Playing view remains accessible by tapping **← Back**.
 
 ---
 
