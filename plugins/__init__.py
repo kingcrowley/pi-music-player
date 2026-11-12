@@ -369,8 +369,16 @@ class PluginManager:
         Returns:
             bool: True if reload succeeded, False otherwise.
         """
+        # Capture source directory before unloading so reload_plugin can
+        # reload from the original directory even if its name differs
+        # from the manifest's plugin_id.
+        source_dir = self._plugin_dirs.get(plugin_id)
         if not self.unload_plugin(plugin_id):
             return False
+        # Reload using the recorded source directory, falling back to
+        # normal lookup if not tracked.
+        if source_dir:
+            return self.load_plugin_from_dir(source_dir) is not None
         return self.load_plugin(plugin_id) is not None
 
     def enable_plugin(self, plugin_id: str) -> bool:
