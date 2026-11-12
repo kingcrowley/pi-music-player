@@ -130,10 +130,12 @@ When stats exceed max size, oldest records are pruned:
 ```json
 {
   "stats": {
-    "retention_days": 365   // Keep 1 year of play history
+    "retention_days": 365   // Close unfinished plays older than 1 year
   }
 }
 ```
+
+**Note:** `retention_days` controls when unfinished (open) play rows are closed — it does not delete completed play history. Completed play history is only pruned when the database exceeds `max_size_mb`.
 
 ## Privacy
 

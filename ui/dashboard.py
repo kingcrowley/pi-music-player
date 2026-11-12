@@ -115,9 +115,17 @@ class Dashboard(tk.Tk):
         # Statistics (Slice 2.2)
         self._showing_stats = False
         self._stats: Optional[PlayStats] = None
+        self._stats_reset_pending = False
         if config is not None:
-            # Create PlayStats from config mapping via Config.get_all()
-            self._stats = PlayStats.from_config(config.get_all())
+            # Create PlayStats from config mapping via Config.get_all().
+            # A corrupt database or unwritable directory must not prevent
+            # the dashboard from opening.
+            # Pass config_owner=self to persist the consumed stats.reset flag.
+            try:
+                self._stats = PlayStats.from_config(config.get_all(), config_owner=config)
+            except Exception as e:
+                logger.warning("PlayStats initialization failed: %s", e)
+                self._stats = None
 
         # Build UI
         self._build_ui()
@@ -263,15 +271,13 @@ class Dashboard(tk.Tk):
     # --- Event Handlers ---
 
     def _on_play_pause(self) -> None:
-        """Toggle play/pause."""
-        # Record the previous play end if transitioning from play to pause
-        if self._stats is not None and self._stats.enabled:
-            try:
-                status = self.music_player.get_status()
-                if status.get("state") == "play":
-                    self._stats.record_play_end(completed=False)
-            except Exception:
-                pass
+        """Toggle play/pause.
+
+        Pausing does NOT end the play event: the same track may resume,
+        and _update_ui() only calls record_play_start() when the file
+        path changes. Closing the row here would leave the resumed
+        listening unrecordable.
+        """
         self.music_player.toggle_play()
 
     def _on_stop(self) -> None:
@@ -604,8 +610,21 @@ class Dashboard(tk.Tk):
 
         # Check for song change
         song_file = song.get("file", "")
-        previous_file = None if self._current_song is None else self._current_song.get("file", "")
-        if song_file != previous_file:
+        previous_song = self._current_song
+        previous_file = None if previous_song is None else previous_song.get("file", "")
+        # Use MPD's queue-entry id to detect repeated plays of the same file.
+        # `id` is present in currentsong() and changes even when `file` stays
+        # the same (repeat-one / same file in consecutive queue entries).
+        song_id = song.get("id") or song.get("file")
+        previous_id = None if previous_song is None else (previous_song.get("id") or previous_song.get("file"))
+        if song_id != previous_id:
+            # A new queue entry has started — close the previous play as
+            # naturally completed before starting the new one.
+            if self._stats is not None and self._stats.enabled:
+                try:
+                    self._stats.record_play_end(completed=True)
+                except Exception as e:
+                    logger.warning("record_play_end failed: %s", e)
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)

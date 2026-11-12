@@ -448,7 +448,8 @@ class PlayStats:
                 """
             )
             rows = cursor.fetchall()
-            heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
+            # Accumulate milliseconds per bucket to avoid per-overlap rounding
+            ms_heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
             for started_at, duration_ms in rows:
                 # Distribute play time across all hours it overlaps
                 remaining_ms = duration_ms
@@ -457,15 +458,18 @@ class PlayStats:
                     dt = time.localtime(current_ts)
                     day = dt.tm_wday  # 0=Mon
                     hour = dt.tm_hour
-                    # Seconds remaining in this hour
-                    sec_in_hour = 3600 - (current_ts % 3600)
+                    # Calculate seconds remaining in the LOCAL hour using local minute/second
+                    sec_in_hour = 3600 - (dt.tm_min * 60 + dt.tm_sec)
                     ms_in_this_hour = min(remaining_ms, sec_in_hour * 1000)
                     if ms_in_this_hour > 0:
-                        minutes = ms_in_this_hour // 60000
-                        if minutes > 0:
-                            heatmap[day][hour] = heatmap[day].get(hour, 0) + minutes
+                        ms_heatmap[day][hour] = ms_heatmap[day].get(hour, 0) + ms_in_this_hour
                     remaining_ms -= ms_in_this_hour
                     current_ts += ms_in_this_hour / 1000.0
+            # Convert accumulated ms to minutes after all plays
+            heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
+            for day, hour_map in ms_heatmap.items():
+                for hour, ms in hour_map.items():
+                    heatmap[day][hour] = ms // 60000
             return heatmap
         except Exception as e:
             logger.warning("get_listening_time_heatmap failed: %s", e)
@@ -636,7 +640,7 @@ class PlayStats:
     # --- Config integration ---
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "PlayStats":
+    def from_config(cls, config: Dict[str, Any], config_owner: Optional[Any] = None) -> "PlayStats":
         """Create a PlayStats instance from a config dict.
 
         Reads stats.enabled, stats.db_path, stats.max_size_mb,
@@ -644,6 +648,8 @@ class PlayStats:
 
         Args:
             config: Configuration dict with stats section
+            config_owner: Optional Config instance (or object with set() and save()
+                          methods) to persist the consumed stats.reset flag.
 
         Returns:
             PlayStats instance (disabled if stats.enabled is False)
@@ -659,11 +665,14 @@ class PlayStats:
         instance._max_size_mb = max_size_mb
         instance._retention_seconds = retention_days * 24 * 3600
 
-        # One-time reset: clear all stored plays and consume the flag
+        # One-time reset: clear all stored plays and consume the flag.
+        # Persist the consumed flag through config_owner if available.
         if stats_reset and enabled:
-            instance.reset_stats()
-            # Clear the reset flag so later launches preserve history
-            stats_cfg["reset"] = False
+            success = instance.reset_stats()
+            if success and config_owner is not None:
+                # Persist the consumed flag so subsequent launches don't re-reset
+                config_owner.set("stats.reset", False)
+                config_owner.save()
 
         return instance
 
