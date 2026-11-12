@@ -629,9 +629,22 @@ class Dashboard(tk.Tk):
         #   2. Playback restarted after a stop (same id, but no active row).
         #   3. Repeat-one fired (same id, but no active row — playback restarted).
         # Pause/resume must NOT close or reopen the row.
-        should_open_new = (song_id != previous_id) or (not self._play_row_active and bool(song_file))
+        song_changed = song_id != previous_id
+        should_open_new = song_changed or (not self._play_row_active and bool(song_file) and self._playback_restarted)
 
-        if should_open_new:
+        # Detect repeat-one: same queue-entry ID, playback restarted, elapsed time decreased
+        if song_changed:
+            self._last_elapsed = elapsed
+            self._playback_restarted = False
+        elif song_id == previous_id and self._last_elapsed is not None:
+            if elapsed < self._last_elapsed * 0.5:
+                # Elapsed dropped more than 50% — repeat-one restart
+                self._playback_restarted = True
+                self._play_row_active = False
+        else:
+            self._playback_restarted = False
+
+        if song_changed:
             # Close the previous play as naturally completed before starting a new one
             # (but only if there was an active row to close).
             if self._play_row_active and self._stats is not None and self._stats.enabled:
@@ -648,8 +661,9 @@ class Dashboard(tk.Tk):
             # next song starts.
             if song_file and self._stats is not None and self._stats.enabled:
                 try:
-                    self._stats.record_play_start(song)
-                    self._play_row_active = True
+                    result = self._stats.record_play_start(song)
+                    if result:
+                        self._play_row_active = True
                 except Exception as e:
                     logger.warning("record_play_start failed: %s", e)
 
