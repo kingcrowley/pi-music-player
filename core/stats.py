@@ -670,9 +670,15 @@ class PlayStats:
         if stats_reset and enabled:
             success = instance.reset_stats()
             if success and config_owner is not None:
-                # Persist the consumed flag so subsequent launches don't re-reset
                 config_owner.set("stats.reset", False)
-                config_owner.save()
+                saved = config_owner.save()
+                if not saved:
+                    logger.warning("Failed to persist stats.reset=false; "
+                                   "next launch will reset history again")
+                    # Stop recording for the remainder of this session while
+                    # preserving connection cleanup: record_* is blocked but
+                    # close() still releases _conn.
+                    instance.enabled = False
 
         return instance
 

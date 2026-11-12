@@ -109,6 +109,8 @@ class Dashboard(tk.Tk):
         self._art_fetch_thread: Optional[threading.Thread] = None
         # Track the file path of the song currently being fetched to reject stale completions
         self._art_fetch_target: Optional[str] = None
+        # Track whether a play row is currently active in the stats database
+        self._play_row_active = False
         self._polling = False
         self._poll_thread: Optional[threading.Thread] = None
 
@@ -282,30 +284,33 @@ class Dashboard(tk.Tk):
 
     def _on_stop(self) -> None:
         """Stop playback."""
-        if self._stats is not None and self._stats.enabled:
+        success = self.music_player.stop()
+        if success and self._stats is not None and self._stats.enabled:
             try:
                 self._stats.record_play_end(completed=False)
+                self._play_row_active = False
             except Exception:
                 pass
-        self.music_player.stop()
 
     def _on_prev(self) -> None:
         """Previous track."""
-        if self._stats is not None and self._stats.enabled:
+        success = self.music_player.previous()
+        if success and self._stats is not None and self._stats.enabled:
             try:
                 self._stats.record_play_end(skipped=True)
+                self._play_row_active = False
             except Exception:
                 pass
-        self.music_player.previous()
 
     def _on_next(self) -> None:
         """Next track."""
-        if self._stats is not None and self._stats.enabled:
+        success = self.music_player.next()
+        if success and self._stats is not None and self._stats.enabled:
             try:
                 self._stats.record_play_end(skipped=True)
+                self._play_row_active = False
             except Exception:
                 pass
-        self.music_player.next()
 
     def _on_volume_change(self, volume: float) -> None:
         """Handle volume slider changes."""
@@ -617,21 +622,34 @@ class Dashboard(tk.Tk):
         # the same (repeat-one / same file in consecutive queue entries).
         song_id = song.get("id") or song.get("file")
         previous_id = None if previous_song is None else (previous_song.get("id") or previous_song.get("file"))
-        if song_id != previous_id:
-            # A new queue entry has started — close the previous play as
-            # naturally completed before starting the new one.
-            if self._stats is not None and self._stats.enabled:
+
+        # Determine if we should open a new play row.
+        # A new row opens when:
+        #   1. The queue entry changed (different id/file).
+        #   2. Playback restarted after a stop (same id, but no active row).
+        #   3. Repeat-one fired (same id, but no active row — playback restarted).
+        # Pause/resume must NOT close or reopen the row.
+        should_open_new = (song_id != previous_id) or (not self._play_row_active and bool(song_file))
+
+        if should_open_new:
+            # Close the previous play as naturally completed before starting a new one
+            # (but only if there was an active row to close).
+            if self._play_row_active and self._stats is not None and self._stats.enabled:
                 try:
                     self._stats.record_play_end(completed=True)
+                    self._play_row_active = False
                 except Exception as e:
                     logger.warning("record_play_end failed: %s", e)
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
-            # Record play start for stats (Slice 2.2)
-            if self._stats is not None and self._stats.enabled:
+            # Record play start for stats — skip when the song has no file.
+            # An empty path would create a phantom completed row when the
+            # next song starts.
+            if song_file and self._stats is not None and self._stats.enabled:
                 try:
                     self._stats.record_play_start(song)
+                    self._play_row_active = True
                 except Exception as e:
                     logger.warning("record_play_start failed: %s", e)
 
