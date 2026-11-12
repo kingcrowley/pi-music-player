@@ -666,19 +666,28 @@ class PlayStats:
         instance._retention_seconds = retention_days * 24 * 3600
 
         # One-time reset: clear all stored plays and consume the flag.
-        # Persist the consumed flag through config_owner if available.
+        # This requires a config_owner to persist the consumed flag.
+        # If no owner is provided, skip the reset and log a warning.
         if stats_reset and enabled:
-            success = instance.reset_stats()
-            if success and config_owner is not None:
-                config_owner.set("stats.reset", False)
-                saved = config_owner.save()
-                if not saved:
-                    logger.warning("Failed to persist stats.reset=false; "
-                                   "next launch will reset history again")
-                    # Stop recording for the remainder of this session while
-                    # preserving connection cleanup: record_* is blocked but
-                    # close() still releases _conn.
-                    instance.enabled = False
+            if config_owner is None:
+                logger.warning(
+                    "stats.reset=True but no config_owner provided; "
+                    "skipping reset to avoid repeating it on every launch"
+                )
+            else:
+                success = instance.reset_stats()
+                if success:
+                    config_owner.set("stats.reset", False)
+                    saved = config_owner.save()
+                    if not saved:
+                        logger.warning(
+                            "Failed to persist stats.reset=false; "
+                            "next launch will reset history again"
+                        )
+                        # Stop recording for the remainder of this session while
+                        # preserving connection cleanup: record_* is blocked but
+                        # close() still releases _conn.
+                        instance.enabled = False
 
         return instance
 

@@ -627,31 +627,48 @@ class Dashboard(tk.Tk):
         song_id = song.get("id") or song.get("file")
         previous_id = None if previous_song is None else (previous_song.get("id") or previous_song.get("file"))
 
-        # Determine if we should open a new play row.
-        # A new row opens when:
-        #   1. The queue entry changed (different id/file).
-        #   2. Playback restarted after a stop (same id, but no active row).
-        #   3. Repeat-one fired (same id, but no active row — playback restarted).
-        # Pause/resume must NOT close or reopen the row.
         song_changed = song_id != previous_id
-        should_open_new = song_changed or (not self._play_row_active and bool(song_file) and self._playback_restarted)
 
-        # Detect repeat-one: same queue-entry ID, playback restarted, elapsed time decreased
+        # Detect repeat-one: same queue-entry ID but elapsed dropped sharply
+        # (a new play started from the beginning). Compare against the previous
+        # poll's elapsed, and always update the baseline for the next poll.
+        prev_elapsed = self._last_elapsed
         if song_changed:
-            self._last_elapsed = elapsed
             self._playback_restarted = False
-        elif song_id == previous_id and self._last_elapsed is not None:
-            if elapsed < self._last_elapsed * 0.5:
-                # Elapsed dropped more than 50% — repeat-one restart
-                # Keep the row active so the existing stop/skip flow can
-                # finalize it as completed.
+        elif song_id == previous_id and prev_elapsed is not None and prev_elapsed > 5:
+            if elapsed < prev_elapsed * 0.5:
                 self._playback_restarted = True
+            else:
+                self._playback_restarted = False
         else:
             self._playback_restarted = False
 
-        # Record play start for stats when there is no active row but playback is
-        # running. This covers: a new queue entry, repeat-one restart, and a
-        # restart after Stop (same queue ID but row was closed by _on_stop).
+        # Always update the baseline so the next poll compares against this one.
+        self._last_elapsed = elapsed
+
+        # On a song change, close the previous play row BEFORE opening the new
+        # one. This ensures the prior row is finalized and the new row is not
+        # immediately closed in the same poll.
+        if song_changed and self._play_row_active:
+            if self._stats is not None and self._stats.enabled:
+                try:
+                    self._stats.record_play_end(completed=True)
+                except Exception as e:
+                    logger.warning("record_play_end failed: %s", e)
+            self._play_row_active = False
+
+        # On repeat-one restart, finalize the previous row so the repeat play
+        # becomes a separate completed row.
+        if self._playback_restarted and self._play_row_active:
+            if self._stats is not None and self._stats.enabled:
+                try:
+                    self._stats.record_play_end(completed=True)
+                except Exception as e:
+                    logger.warning("record_play_end failed: %s", e)
+            self._play_row_active = False
+
+        # Open a new play row when no row is active but a track is loaded and
+        # either the song changed or playback restarted on the same entry.
         # Pause/resume does NOT qualify because _play_row_active stays True.
         if (not self._play_row_active and bool(song_file)
                 and self._stats is not None and self._stats.enabled
@@ -664,15 +681,8 @@ class Dashboard(tk.Tk):
             except Exception as e:
                 logger.warning("record_play_start failed: %s", e)
 
+        # Track-display updates are tied to an actual song change only.
         if song_changed:
-            # Close the previous play as naturally completed before starting a new one
-            # (but only if there was an active row to close).
-            if self._play_row_active and self._stats is not None and self._stats.enabled:
-                try:
-                    self._stats.record_play_end(completed=True)
-                    self._play_row_active = False
-                except Exception as e:
-                    logger.warning("record_play_end failed: %s", e)
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
