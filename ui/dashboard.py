@@ -649,6 +649,21 @@ class Dashboard(tk.Tk):
         else:
             self._playback_restarted = False
 
+        # Record play start for stats when there is no active row but playback is
+        # running. This covers: a new queue entry, repeat-one restart, and a
+        # restart after Stop (same queue ID but row was closed by _on_stop).
+        # Pause/resume does NOT qualify because _play_row_active stays True.
+        if (not self._play_row_active and bool(song_file)
+                and self._stats is not None and self._stats.enabled
+                and (song_changed or self._playback_restarted)):
+            try:
+                result = self._stats.record_play_start(song)
+                if result:
+                    self._play_row_active = True
+                self._playback_restarted = False
+            except Exception as e:
+                logger.warning("record_play_start failed: %s", e)
+
         if song_changed:
             # Close the previous play as naturally completed before starting a new one
             # (but only if there was an active row to close).
@@ -661,16 +676,6 @@ class Dashboard(tk.Tk):
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
-            # Record play start for stats — skip when the song has no file.
-            # An empty path would create a phantom completed row when the
-            # next song starts.
-            if song_file and self._stats is not None and self._stats.enabled:
-                try:
-                    result = self._stats.record_play_start(song)
-                    if result:
-                        self._play_row_active = True
-                except Exception as e:
-                    logger.warning("record_play_start failed: %s", e)
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS or HH:MM:SS."""
