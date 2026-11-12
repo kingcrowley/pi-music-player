@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 from core.config import Config
 from core.player import MusicPlayer
 from core.artwork import ArtworkCache
+from core.stats import PlayStats
 from ui.styles import COLORS, FONTS, SPACING, WINDOW, TOUCH_TARGET_SIZE
 from ui.widget import (
     TouchButton,
@@ -111,6 +112,13 @@ class Dashboard(tk.Tk):
         self._polling = False
         self._poll_thread: Optional[threading.Thread] = None
 
+        # Statistics (Slice 2.2)
+        self._showing_stats = False
+        self._stats: Optional[PlayStats] = None
+        if config is not None:
+            # Create PlayStats from config if available
+            self._stats = PlayStats.from_config(config.config)
+
         # Build UI
         self._build_ui()
 
@@ -127,18 +135,19 @@ class Dashboard(tk.Tk):
         self.grid_rowconfigure(3, weight=0)  # time + volume
         self.grid_rowconfigure(4, weight=0)  # playback controls
         self.grid_rowconfigure(5, weight=0)  # status
+        self.grid_rowconfigure(6, weight=0)  # stats (hidden by default)
 
         # Row 0: Album Art (center)
         self.album_art = AlbumArtLabel(self, size=300)
         self.album_art.grid(row=0, column=0, pady=(SPACING["xl"], SPACING["md"]))
 
         # Row 1: Track Info
-        info_frame = tk.Frame(self, bg=COLORS["bg"])
-        info_frame.grid(row=1, column=0, pady=SPACING["sm"])
-        info_frame.grid_columnconfigure(0, weight=1)
+        self.info_frame = tk.Frame(self, bg=COLORS["bg"])
+        self.info_frame.grid(row=1, column=0, pady=SPACING["sm"])
+        self.info_frame.grid_columnconfigure(0, weight=1)
 
         self.title_label = tk.Label(
-            info_frame,
+            self.info_frame,
             text="No Track",
             font=FONTS["title"],
             fg=COLORS["fg"],
@@ -148,7 +157,7 @@ class Dashboard(tk.Tk):
         self.title_label.pack(pady=SPACING["xs"])
 
         self.artist_label = tk.Label(
-            info_frame,
+            self.info_frame,
             text="",
             font=FONTS["artist"],
             fg=COLORS["fg"],
@@ -158,7 +167,7 @@ class Dashboard(tk.Tk):
         self.artist_label.pack(pady=SPACING["xs"])
 
         self.album_label = tk.Label(
-            info_frame,
+            self.info_frame,
             text="",
             font=FONTS["album"],
             fg=COLORS["muted"],
@@ -173,12 +182,12 @@ class Dashboard(tk.Tk):
         self.progress_bar.set_seek_callback(self._on_seek)
 
         # Row 3: Time + Volume
-        time_volume_frame = tk.Frame(self, bg=COLORS["bg"])
-        time_volume_frame.grid(row=3, column=0, pady=SPACING["sm"])
-        time_volume_frame.grid_columnconfigure(1, weight=1)
+        self.time_volume_frame = tk.Frame(self, bg=COLORS["bg"])
+        self.time_volume_frame.grid(row=3, column=0, pady=SPACING["sm"])
+        self.time_volume_frame.grid_columnconfigure(1, weight=1)
 
         self.elapsed_label = tk.Label(
-            time_volume_frame,
+            self.time_volume_frame,
             text="00:00",
             font=FONTS["time"],
             fg=COLORS["fg"],
@@ -187,7 +196,7 @@ class Dashboard(tk.Tk):
         self.elapsed_label.grid(row=0, column=0, padx=SPACING["md"])
 
         self.volume_slider = VolumeSlider(
-            time_volume_frame,
+            self.time_volume_frame,
             orientation="horizontal",
             width=300,
             height=24,
@@ -196,7 +205,7 @@ class Dashboard(tk.Tk):
         self.volume_slider.grid(row=0, column=1, padx=SPACING["md"])
 
         self.duration_label = tk.Label(
-            time_volume_frame,
+            self.time_volume_frame,
             text="00:00",
             font=FONTS["time"],
             fg=COLORS["fg"],
@@ -205,40 +214,51 @@ class Dashboard(tk.Tk):
         self.duration_label.grid(row=0, column=2, padx=SPACING["md"])
 
         # Row 4: Playback Controls
-        controls_frame = tk.Frame(self, bg=COLORS["bg"])
-        controls_frame.grid(row=4, column=0, pady=SPACING["lg"])
+        self.controls_frame = tk.Frame(self, bg=COLORS["bg"])
+        self.controls_frame.grid(row=4, column=0, pady=SPACING["lg"])
 
         self.prev_button = TouchButton(
-            controls_frame,
+            self.controls_frame,
             text="⏮",
             command=self._on_prev,
         )
         self.prev_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.play_pause_button = TouchButton(
-            controls_frame,
+            self.controls_frame,
             text="▶",
             command=self._on_play_pause,
         )
         self.play_pause_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.stop_button = TouchButton(
-            controls_frame,
+            self.controls_frame,
             text="⏹",
             command=self._on_stop,
         )
         self.stop_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
         self.next_button = TouchButton(
-            controls_frame,
+            self.controls_frame,
             text="⏭",
             command=self._on_next,
         )
         self.next_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
 
+        self.stats_button = TouchButton(
+            self.controls_frame,
+            text="📊",
+            command=self._toggle_stats,
+        )
+        self.stats_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
+
         # Row 5: Status Label
         self.status_label = StatusLabel(self, text="Connecting…")
         self.status_label.grid(row=5, column=0, pady=SPACING["md"])
+
+        # Row 6: Statistics frame (hidden by default)
+        self._stats_frame = None
+        self._stats_content = None
 
     # --- Event Handlers ---
 
@@ -294,6 +314,169 @@ class Dashboard(tk.Tk):
             self._update_ui(status, song)
         except Exception as e:
             logger.warning("Refresh error: %s", e)
+
+    # --- Statistics Screen (Slice 2.2) ---
+
+    def _toggle_stats(self) -> None:
+        """Toggle between now-playing view and statistics screen."""
+        self._showing_stats = not self._showing_stats
+        if self._showing_stats:
+            self._show_stats_view()
+        else:
+            self._show_now_playing_view()
+
+    def _show_stats_view(self) -> None:
+        """Show stats view, hide now-playing widgets."""
+        # Hide now-playing widgets
+        self.album_art.grid_remove()
+        self.info_frame.grid_remove()
+        self.progress_bar.grid_remove()
+        self.time_volume_frame.grid_remove()
+        self.controls_frame.grid_remove()
+        self.status_label.grid_remove()
+        self.stats_button.config(text="← Back")
+
+        # Create stats frame if needed
+        if self._stats_frame is None:
+            self._create_stats_frame()
+        else:
+            self._stats_frame.grid()
+
+        self._refresh_stats_content()
+
+    def _show_now_playing_view(self) -> None:
+        """Show now-playing widgets, hide stats."""
+        self.album_art.grid()
+        self.info_frame.grid()
+        self.progress_bar.grid()
+        self.time_volume_frame.grid()
+        self.controls_frame.grid()
+        self.status_label.grid()
+        self.stats_button.config(text="📊")
+
+        # Hide stats frame
+        if self._stats_frame is not None:
+            self._stats_frame.grid_remove()
+
+    def _create_stats_frame(self) -> None:
+        """Create the stats frame with all stats content."""
+        if self._stats is None:
+            return
+
+        self._stats_frame = tk.Frame(self, bg=COLORS["bg"])
+        self._stats_frame.grid(row=6, column=0, columnspan=1, pady=SPACING["lg"], padx=SPACING["md"], sticky="nsew")
+
+        # Title
+        tk.Label(
+            self._stats_frame,
+            text="📊 Play Statistics",
+            font=FONTS["title"],
+            fg=COLORS["fg"],
+            bg=COLORS["bg"],
+        ).pack(pady=SPACING["sm"])
+
+        # Content frame
+        self._stats_content = tk.Frame(self._stats_frame, bg=COLORS["bg"])
+        self._stats_content.pack(fill=tk.BOTH, expand=True, padx=SPACING["md"], pady=SPACING["md"])
+
+        # Back button
+        TouchButton(
+            self._stats_frame,
+            text="← Back",
+            command=self._toggle_stats,
+        ).pack(side=tk.BOTTOM, pady=SPACING["sm"])
+
+    def _refresh_stats_content(self) -> None:
+        """Refresh stats content with latest data."""
+        if self._stats is None or self._stats_content is None:
+            return
+
+        # Clear existing content
+        for widget in self._stats_content.winfo_children():
+            widget.destroy()
+
+        # Top Artists
+        artist_playcounts = self._stats.get_artist_playcounts()
+        if artist_playcounts:
+            artist_text = "\n".join([f"{a}: {c} plays" for a, c in list(artist_playcounts.items())[:5]])
+            tk.Label(
+                self._stats_content,
+                text="Top Artists\n" + artist_text,
+                font=FONTS["artist"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            ).pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Top Albums
+        album_playcounts = self._stats.get_album_playcounts()
+        if album_playcounts:
+            album_text = "\n".join([f"{a}: {c} plays" for a, c in list(album_playcounts.items())[:5]])
+            tk.Label(
+                self._stats_content,
+                text="Top Albums\n" + album_text,
+                font=FONTS["album"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            ).pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Skip Rate
+        skip_rates = self._stats.get_skip_rate()
+        if skip_rates:
+            skip_text = "\n".join([f"{a}: {r:.0f}%" for a, r in list(skip_rates.items())[:5]])
+            tk.Label(
+                self._stats_content,
+                text="Skip Rate\n" + skip_text,
+                font=FONTS["status"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            ).pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Listening Time Heatmap
+        heatmap = self._stats.get_listening_time_heatmap()
+        if heatmap:
+            heatmap_text = "Listening Time (by day/hour)\n"
+            day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            for day_idx in range(7):
+                if heatmap[day_idx]:
+                    hours = ", ".join([f"{h}:00={m}min" for h, m in sorted(heatmap[day_idx].items())])
+                    heatmap_text += f"{day_names[day_idx]}: {hours}\n"
+            tk.Label(
+                self._stats_content,
+                text=heatmap_text,
+                font=FONTS["status"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            ).pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Export CSV button
+        def _export_csv():
+            try:
+                csv_path = self._stats.export_csv()
+                if csv_path:
+                    tk.Label(
+                        self._stats_content,
+                        text=f"Exported to: {csv_path}",
+                        font=FONTS["status"],
+                        fg=COLORS["warning"],
+                        bg=COLORS["bg"],
+                        justify=tk.LEFT,
+                    ).pack(pady=SPACING["xs"])
+            except Exception as e:
+                logger.warning("CSV export failed: %s", e)
+
+        TouchButton(
+            self._stats_content,
+            text="Export CSV",
+            command=_export_csv,
+        ).pack(side=tk.TOP, pady=SPACING["sm"])
 
     # --- Polling Loop ---
 
@@ -404,9 +587,6 @@ class Dashboard(tk.Tk):
         """
         file_path = song.get("file", "")
         if not file_path:
-            # Clear pending target so a stale fetch completion won't
-            # start artwork for a song that is no longer current.
-            self._art_fetch_target = None
             self.after(0, self.album_art.clear_art)
             return
 
