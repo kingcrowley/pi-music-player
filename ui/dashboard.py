@@ -138,11 +138,11 @@ class Dashboard(tk.Tk):
                 logger.warning("PlayStats initialization failed: %s", e)
                 self._stats = None
 
-        # Update stats button visibility based on stats state
-        self._update_stats_button_visibility()
-
         # Build UI
         self._build_ui()
+
+        # Update stats button visibility after UI is built
+        self._update_stats_button_visibility()
 
         # Start polling
         self._start_poll_loop()
@@ -350,6 +350,9 @@ class Dashboard(tk.Tk):
 
         thread = threading.Thread(target=_seek, daemon=True)
         thread.start()
+        # Mark a pending seek so that a dropped elapsed value on the next poll
+        # is not misinterpreted as a play restart.
+        self._seek_pending = True
 
     def _refresh_ui(self) -> None:
         """Refresh UI on Tk thread after a background seek."""
@@ -647,12 +650,25 @@ class Dashboard(tk.Tk):
         previous_id = None if previous_song is None else (previous_song.get("id") or previous_song.get("file"))
 
         song_changed = song_id != previous_id
+        # Unknown poll: get_current_song() returns {} when MPD fails. Do not
+        # treat this as a confirmed track ending — keep any active row open.
+        song_unknown = not bool(song_file)
+
+        # Detect transitions into active playback.
+        transition_into_play = (state == "playing" and self._prev_state != "playing")
 
         # Detect repeat-one: same queue-entry ID but elapsed dropped sharply
         # (a new play started from the beginning). Compare against the previous
         # poll's elapsed, and always update the baseline for the next poll.
+        # Suppress restart detection when a user-initiated seek is pending —
+        # a backward seek also drops elapsed sharply.
         prev_elapsed = self._last_elapsed
+        seek_pending = self._seek_pending
+        self._seek_pending = False
         if song_changed:
+            self._playback_restarted = False
+        elif seek_pending:
+            # A seek caused the elapsed change, not a restart.
             self._playback_restarted = False
         elif song_id == previous_id and prev_elapsed is not None and prev_elapsed > 5:
             if elapsed < prev_elapsed * 0.5:
@@ -664,6 +680,7 @@ class Dashboard(tk.Tk):
 
         # Always update the baseline so the next poll compares against this one.
         self._last_elapsed = elapsed
+        self._prev_state = state
 
         # On a song change, close the previous play row BEFORE opening the new
         # one. This ensures the prior row is finalized and the new row is not
