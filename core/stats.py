@@ -338,16 +338,18 @@ class PlayStats:
     # --- Cleanup / retention ---
 
     def _cleanup_open_plays(self) -> None:
-        """Close any open play events older than retention_days."""
+        """Close any open play events older than retention_seconds."""
         if not self.enabled:
             return
         try:
+            # Use <= to close plays that reached the retention boundary
+            # exactly, so the boundary test doesn't miss a play.
             self._conn.execute(
                 """
                 UPDATE plays
                 SET ended_at = started_at, completed = 0, skipped = 0
                 WHERE ended_at IS NULL
-                  AND started_at < ?
+                  AND started_at <= ?
                 """,
                 (int(time.time()) - self._retention_seconds,),
             )
