@@ -335,6 +335,220 @@ class PlayStats:
             logger.warning("get_artist_stats failed: %s", e)
             return {"plays": 0, "playtime_ms": 0}
 
+    # --- Statistics UI Queries (Slice 2.2) ---
+
+    def get_artist_playcounts(self) -> Dict[str, int]:
+        """Get total completed play counts per artist.
+
+        Returns:
+            Dict mapping artist name to completed play count.
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT artist, COUNT(*) as cnt
+                FROM plays
+                WHERE completed = 1 AND artist IS NOT NULL AND artist != ''
+                GROUP BY artist
+                ORDER BY cnt DESC
+                """
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_artist_playcounts failed: %s", e)
+            return {}
+
+    def get_album_playcounts(self) -> Dict[str, int]:
+        """Get total completed play counts per album.
+
+        Returns:
+            Dict mapping "Artist - Album" to completed play count.
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT artist, album, COUNT(*) as cnt
+                FROM plays
+                WHERE completed = 1 AND album IS NOT NULL AND album != ''
+                GROUP BY artist, album
+                ORDER BY cnt DESC
+                """
+            )
+            return {f"{row[0]} - {row[1]}": row[2] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_album_playcounts failed: %s", e)
+            return {}
+
+    def get_skip_rate(self, artist: Optional[str] = None) -> Dict[str, float]:
+        """Get skip rate (skips / total plays) for all artists, or a specific artist.
+
+        Args:
+            artist: Optional artist name to filter by. If None, returns all.
+
+        Returns:
+            Dict mapping artist (or "Artist - Album") to skip percentage (0.0-100.0).
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            if artist is not None:
+                cursor = self._conn.execute(
+                    """
+                    SELECT album,
+                           SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
+                    FROM plays
+                    WHERE completed = 1 AND artist = ?
+                    GROUP BY album
+                    ORDER BY pct DESC
+                    """,
+                    (artist,),
+                )
+                return {f"{artist} - {row[0]}": row[1] for row in cursor.fetchall()}
+            else:
+                cursor = self._conn.execute(
+                    """
+                    SELECT artist,
+                           SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
+                    FROM plays
+                    WHERE completed = 1
+                    GROUP BY artist
+                    ORDER BY pct DESC
+                    """
+                )
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_skip_rate failed: %s", e)
+            return {}
+
+    def get_listening_time_heatmap(self) -> Dict[str, Dict[int, int]]:
+        """Get listening time heatmap by hour of day and day of week.
+
+        Returns:
+            Dict mapping day-of-week (0=Mon..6=Sun) to hour->minutes mapping.
+            Empty dict if disabled or error.
+
+        Example:
+            {0: {8: 120, 9: 45, ...}, 1: {9: 30, ...}, ...}
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT started_at, duration_ms
+                FROM plays
+                WHERE completed = 1 AND duration_ms IS NOT NULL
+                """
+            )
+            rows = cursor.fetchall()
+            heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
+            for started_at, duration_ms in rows:
+                dt = time.localtime(started_at)
+                day = dt.tm_wday  # 0=Mon
+                hour = dt.tm_hour
+                minutes = duration_ms // 60000
+                if minutes > 0:
+                    heatmap[day][hour] = heatmap[day].get(hour, 0) + minutes
+            return heatmap
+        except Exception as e:
+            logger.warning("get_listening_time_heatmap failed: %s", e)
+            return {}
+
+    def get_recent_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent play history (completed plays only).
+
+        Args:
+            limit: Maximum number of entries to return (default: 20).
+
+        Returns:
+            List of play dicts with full metadata, most recent first.
+        """
+        if not self.enabled:
+            return []
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT id, track_path, artist, album, title,
+                       started_at, ended_at, completed, skipped, duration_ms
+                FROM plays
+                WHERE completed = 1
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "file": row[1],
+                    "artist": row[2],
+                    "album": row[3],
+                    "title": row[4],
+                    "started_at": row[5],
+                    "ended_at": row[6],
+                    "completed": bool(row[7]),
+                    "skipped": bool(row[8]),
+                    "duration_ms": row[9],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.warning("get_recent_history failed: %s", e)
+            return []
+
+    def export_csv(self, csv_path: Optional[str] = None) -> Optional[str]:
+        """Export all completed plays to a CSV file.
+
+        Args:
+            csv_path: Optional path for output CSV. If None, uses
+                      play_stats.csv in the same directory as the database.
+
+        Returns:
+            Path to written CSV file, or None if disabled or error.
+        """
+        if not self.enabled:
+            return None
+        try:
+            import csv as csv_module
+            if csv_path is None:
+                csv_path = str(Path(self.db_path).with_name("play_stats.csv"))
+
+            cursor = self._conn.execute(
+                """
+                SELECT id, track_path, artist, album, title,
+                       started_at, ended_at, completed, skipped, duration_ms
+                FROM plays
+                WHERE completed = 1
+                ORDER BY id ASC
+                """
+            )
+            rows = cursor.fetchall()
+
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv_module.writer(f)
+                writer.writerow([
+                    "id", "file", "artist", "album", "title",
+                    "started_at", "ended_at", "completed", "skipped", "duration_ms"
+                ])
+                for row in rows:
+                    writer.writerow([
+                        row[0], row[1], row[2], row[3], row[4],
+                        row[5], row[6], int(row[7]), int(row[8]), row[9]
+                    ])
+            logger.info("Exported %d plays to %s", len(rows), csv_path)
+            return csv_path
+        except Exception as e:
+            logger.warning("export_csv failed: %s", e)
+            return None
+
     # --- Cleanup / retention ---
 
     def _cleanup_open_plays(self) -> None:
