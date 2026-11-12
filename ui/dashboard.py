@@ -105,6 +105,8 @@ class Dashboard(tk.Tk):
         self._current_song: Optional[Dict[str, Any]] = None
         self._current_art = None
         self._art_fetch_thread: Optional[threading.Thread] = None
+        # Track the file path of the song currently being fetched to reject stale completions
+        self._art_fetch_target: Optional[str] = None
         self._polling = False
         self._poll_thread: Optional[threading.Thread] = None
 
@@ -350,9 +352,6 @@ class Dashboard(tk.Tk):
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
-            # Redraw placeholder if album art area was cleared and no art loaded
-            if self._current_art is None and self.album_art._image_id is None:
-                self.album_art._draw_placeholder()
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS or HH:MM:SS."""
@@ -371,19 +370,35 @@ class Dashboard(tk.Tk):
         self.album_label.config(text=song.get("album", "Unknown Album"))
 
     def _fetch_album_art(self, song: Dict[str, Any]) -> None:
-        """Fetch album art in background thread."""
-        if self._art_fetch_thread and self._art_fetch_thread.is_alive():
+        """Fetch album art in background thread.
+
+        Retains the latest track's request while a fetch is active.
+        When a fetch completes, rejects the result if the track no longer
+        matches _current_song, then starts a new fetch for the current track.
+        """
+        file_path = song.get("file", "")
+        if not file_path:
+            self.after(0, self.album_art.clear_art)
             return
 
+        # If a fetch is already in progress, update the target to the latest song
+        # and let the current fetch complete (it will be rejected on completion)
+        if self._art_fetch_thread and self._art_fetch_thread.is_alive():
+            self._art_fetch_target = file_path
+            return
+
+        # No active fetch - start a new one for this song
+        self._art_fetch_target = file_path
+
         def fetch_art():
-            file_path = song.get("file", "")
-            if not file_path:
+            target_path = file_path
+            if not target_path:
                 self.after(0, self.album_art.clear_art)
                 return
 
             # Resolve absolute path using core.player._resolve_song_path logic
             music_dir = _get_mpd_music_dir(self.config)
-            abs_file_path = _resolve_song_path(file_path, music_dir)
+            abs_file_path = _resolve_song_path(target_path, music_dir)
 
             art_path = self.artwork_cache.get_art(abs_file_path)
             if art_path:
@@ -392,15 +407,36 @@ class Dashboard(tk.Tk):
                     img = Image.open(art_path)
                     img = img.resize((300, 300), Image.Resampling.LANCZOS)
                     photo = ImageTk.PhotoImage(img)
-                    self.after(0, lambda: self.album_art.set_art(photo))
+                    # Only apply if this is still the current track
+                    self.after(0, lambda: self._on_art_fetched(target_path, photo))
                 except Exception as e:
                     logger.warning("Failed to load album art: %s", e)
-                    self.after(0, self.album_art.clear_art)
+                    self.after(0, lambda: self._on_art_fetched(target_path, None))
             else:
-                self.after(0, self.album_art.clear_art)
+                self.after(0, lambda: self._on_art_fetched(target_path, None))
 
         self._art_fetch_thread = threading.Thread(target=fetch_art, daemon=True)
         self._art_fetch_thread.start()
+
+    def _on_art_fetched(self, fetched_path: str, photo: Optional[object]) -> None:
+        """Handle completion of an artwork fetch.
+
+        Rejects the result if the fetched track no longer matches _current_song.
+        If rejected and there's a newer pending target, starts a fetch for that.
+        """
+        current_path = self._current_song.get("file", "") if self._current_song else ""
+        if fetched_path != current_path:
+            # Stale fetch - discard and check if we should start a new one
+            if self._art_fetch_target and self._art_fetch_target != fetched_path:
+                # There's a newer target pending - start fetch for it
+                self._fetch_album_art({"file": self._art_fetch_target})
+            return
+
+        # Fresh result for current track
+        if photo:
+            self.album_art.set_art(photo)
+        else:
+            self.album_art.clear_art()
 
     def _on_close(self) -> None:
         """Handle window close."""
