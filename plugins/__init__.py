@@ -192,9 +192,12 @@ class PluginManager:
         if hasattr(plugin_instance, "get_registered_hooks"):
             hooks = plugin_instance.get_registered_hooks()
             plugin_hooks = self._plugin_hooks[plugin_id]
-            for event_name, callback in hooks.items():
-                self.register_hook(event_name, callback)
-                plugin_hooks.setdefault(event_name, []).append(callback)
+            for event_name, callbacks in hooks.items():
+                # get_registered_hooks returns Dict[str, List[Callable]];
+                # iterate the list so each callable is registered individually.
+                for callback in callbacks:
+                    self.register_hook(event_name, callback)
+                    plugin_hooks.setdefault(event_name, []).append(callback)
 
         logger.info("Loaded plugin: %s v%s (%s)", plugin_id, manifest.version, manifest.type)
         return plugin_instance
