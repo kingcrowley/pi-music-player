@@ -449,6 +449,11 @@ class PluginManager:
             ):
                 continue
             for callback in plugin_hooks.get(event_name, []):
+                # Re-check registration before each callback: if a previous
+                # callback unloaded or reloaded this plugin, stop invoking
+                # callbacks from the old registration.
+                if self._plugin_hooks.get(plugin_id) is not plugin_hooks:
+                    break
                 try:
                     callback(*args, **kwargs)
                 except Exception as e:
