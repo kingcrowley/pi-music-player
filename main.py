@@ -95,8 +95,13 @@ def main() -> int:
         return 1
 
     # Create artwork cache
+    cache_dir = config.get("cache.artwork_cache_dir")
+    # Expand ~ because ArtworkCache only applies Path() to explicit dirs
+    if cache_dir:
+        cache_dir = os.path.expanduser(cache_dir)
     cache = ArtworkCache(
         max_size_mb=config.get("cache.artwork_max_size_mb", 50),
+        cache_dir=cache_dir,
     )
     print(f"Artwork cache ready: {cache.cache_dir}")
 
