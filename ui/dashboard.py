@@ -404,6 +404,9 @@ class Dashboard(tk.Tk):
         """
         file_path = song.get("file", "")
         if not file_path:
+            # Clear pending target so a stale fetch completion won't
+            # start artwork for a song that is no longer current.
+            self._art_fetch_target = None
             self.after(0, self.album_art.clear_art)
             return
 
@@ -454,6 +457,10 @@ class Dashboard(tk.Tk):
         if fetched_path != current_path:
             # Stale fetch - discard and check if we should start a new one
             if self._art_fetch_target and self._art_fetch_target != fetched_path:
+                # Clear the worker handle so the new fetch's is_alive() guard
+                # in _fetch_album_art doesn't block because A's thread is
+                # still alive while we're in its completion callback.
+                self._art_fetch_thread = None
                 # There's a newer target pending - start fetch for it
                 self._fetch_album_art({"file": self._art_fetch_target})
             return
