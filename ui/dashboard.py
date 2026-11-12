@@ -122,6 +122,11 @@ class Dashboard(tk.Tk):
         self._last_elapsed: Optional[float] = None
         # Flag: playback restarted on same queue entry (repeat-one)
         self._playback_restarted = False
+        # Flag: a user-initiated seek is in progress; suppress restart detection
+        # for the next poll so a backward seek isn't misread as a new play.
+        self._seek_pending = False
+        # Previous MPD playback state for transition detection
+        self._prev_state: Optional[str] = None
         if config is not None:
             # Create PlayStats from config mapping via Config.get_all().
             # A corrupt database or unwritable directory must not prevent
@@ -132,6 +137,9 @@ class Dashboard(tk.Tk):
             except Exception as e:
                 logger.warning("PlayStats initialization failed: %s", e)
                 self._stats = None
+
+        # Update stats button visibility based on stats state
+        self._update_stats_button_visibility()
 
         # Build UI
         self._build_ui()
@@ -355,6 +363,13 @@ class Dashboard(tk.Tk):
 
     # --- Statistics Screen (Slice 2.2) ---
 
+    def _update_stats_button_visibility(self) -> None:
+        """Show or hide stats button based on stats availability."""
+        if self._stats is not None and self._stats.enabled:
+            self.stats_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
+        else:
+            self.stats_button.pack_forget()
+
     def _toggle_stats(self) -> None:
         """Toggle between now-playing view and statistics screen."""
         # Don't open an empty Stats screen when statistics are disabled
@@ -437,6 +452,7 @@ class Dashboard(tk.Tk):
         TouchButton(
             self._stats_frame,
             text="← Back",
+            width=120,
             command=self._toggle_stats,
         ).pack(side=tk.BOTTOM, pady=SPACING["sm"])
 
@@ -466,7 +482,10 @@ class Dashboard(tk.Tk):
         # Top Albums
         album_playcounts = self._stats.get_album_playcounts()
         if album_playcounts:
-            album_text = "\n".join([f"{a}: {c} plays" for a, c in list(album_playcounts.items())[:5]])
+            # Keys are (artist, album) tuples — format as "Artist - Album".
+            album_text = "\n".join(
+                [f"{a} - {al}: {c} plays" for (a, al), c in list(album_playcounts.items())[:5]]
+            )
             tk.Label(
                 self._stats_content,
                 text="Top Albums\n" + album_text,

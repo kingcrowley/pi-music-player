@@ -361,11 +361,11 @@ class PlayStats:
             logger.warning("get_artist_playcounts failed: %s", e)
             return {}
 
-    def get_album_playcounts(self) -> Dict[str, int]:
+    def get_album_playcounts(self) -> Dict[tuple, int]:
         """Get total completed play counts per album.
 
         Returns:
-            Dict mapping "Artist - Album" to completed play count.
+            Dict mapping (artist, album) tuple to completed play count.
             Empty dict if disabled or error.
         """
         if not self.enabled:
@@ -380,7 +380,7 @@ class PlayStats:
                 ORDER BY cnt DESC
                 """
             )
-            return {f"{row[0]} - {row[1]}": row[2] for row in cursor.fetchall()}
+            return {(row[0], row[1]): row[2] for row in cursor.fetchall()}
         except Exception as e:
             logger.warning("get_album_playcounts failed: %s", e)
             return {}
@@ -534,6 +534,25 @@ class PlayStats:
             import csv as csv_module
             if csv_path is None:
                 csv_path = str(Path(self.db_path).with_name("play_stats.csv"))
+
+            # Reject paths that identify the database file itself, including
+            # equivalent paths and symbolic links, to prevent truncating the
+            # active database.
+            csv_abs = os.path.abspath(csv_path)
+            db_abs = os.path.abspath(self.db_path)
+            # Resolve symlinks for both paths before comparing
+            try:
+                csv_real = os.path.realpath(csv_path)
+                db_real = os.path.realpath(self.db_path)
+            except (OSError, RuntimeError):
+                csv_real = csv_abs
+                db_real = db_abs
+            if csv_abs == db_abs or csv_real == db_real:
+                logger.error(
+                    "Refusing to export to %s: path identifies the active database file",
+                    csv_path,
+                )
+                return None
 
             cursor = self._conn.execute(
                 """
