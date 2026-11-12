@@ -40,6 +40,12 @@ class Config:
             "detected_display_server": "auto",
             "detected_distro": "auto",
         },
+        "stats": {
+            "enabled": True,
+            "db_path": "~/.local/share/pi-music-player/play_stats.db",
+            "max_size_mb": 10,
+            "retention_days": 365,
+        },
     }
 
     def __init__(self, config_path: Optional[str] = None):
