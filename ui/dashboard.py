@@ -118,6 +118,10 @@ class Dashboard(tk.Tk):
         self._showing_stats = False
         self._stats: Optional[PlayStats] = None
         self._stats_reset_pending = False
+        # Track last elapsed time for repeat-one detection
+        self._last_elapsed: Optional[float] = None
+        # Flag: playback restarted on same queue entry (repeat-one)
+        self._playback_restarted = False
         if config is not None:
             # Create PlayStats from config mapping via Config.get_all().
             # A corrupt database or unwritable directory must not prevent
@@ -639,8 +643,9 @@ class Dashboard(tk.Tk):
         elif song_id == previous_id and self._last_elapsed is not None:
             if elapsed < self._last_elapsed * 0.5:
                 # Elapsed dropped more than 50% — repeat-one restart
+                # Keep the row active so the existing stop/skip flow can
+                # finalize it as completed.
                 self._playback_restarted = True
-                self._play_row_active = False
         else:
             self._playback_restarted = False
 
