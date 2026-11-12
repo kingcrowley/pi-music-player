@@ -79,8 +79,13 @@ def main() -> int:
     config = Config()
     print(f"\nConfig loaded: {config.config_path}")
 
-    # Connect to MPD
-    player = MusicPlayer()
+    # Connect to MPD (use settings from config)
+    mpd_config = config.get("mpd", {})
+    player = MusicPlayer(
+        host=mpd_config.get("host", "localhost"),
+        port=int(mpd_config.get("port", 6600)),
+        timeout=float(mpd_config.get("timeout", 5.0)),
+    )
     connected = player.connect()
 
     print(f"\nConnection status: {connected}")

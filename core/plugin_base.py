@@ -41,6 +41,9 @@ class MusicPlayerPlugin(ABC):
         self.version = config.get("version", "0.0.1")
         self.core: Optional["CoreEngine"] = None  # Set during initialize()
         self._initialized = False
+        # Registry of hooks registered by this plugin, so the
+        # PluginManager can pick them up via get_registered_hooks().
+        self._plugin_hooks: Dict[str, List[Callable]] = {}
 
     @abstractmethod
     def initialize(self, core: "CoreEngine") -> bool:
@@ -111,10 +114,15 @@ class MusicPlayerPlugin(ABC):
 
         Convenience wrapper around core.register_hook().
 
+        Also records the callback on the plugin instance so that
+        PluginManager.get_registered_hooks() can expose it to the
+        manager's dispatch path.
+
         Args:
             event_name: Event name (e.g., "on_song_change", "on_playback_state").
             callback: Function to call when event fires.
         """
+        self._plugin_hooks.setdefault(event_name, []).append(callback)
         if self.core and hasattr(self.core, "register_hook"):
             self.core.register_hook(event_name, callback)
 
@@ -133,13 +141,12 @@ class MusicPlayerPlugin(ABC):
         """Return hooks registered by this plugin.
 
         Called by PluginManager during load to register declared hooks
-        with the manager. Returns an empty dict by default since plugins
-        must register hooks via register_hook().
+        with the manager. Returns the plugin's locally recorded hooks.
 
         Returns:
             Dict mapping event name to list of callbacks.
         """
-        return {event: list(cbs) for event, cbs in getattr(self, "_plugin_hooks", {}).items()}
+        return {event: list(cbs) for event, cbs in self._plugin_hooks.items() if cbs}
 
     @property
     def initialized(self) -> bool:
