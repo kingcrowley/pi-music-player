@@ -1,10 +1,23 @@
-# Raspberry Pi Zero 2W Setup Guide
+# Raspberry Pi Setup Guide
 
-Complete walkthrough for getting the music player running on a fresh Raspberry Pi Zero 2 W with Raspberry Pi OS.
+Complete walkthrough for getting the music player running on a Raspberry Pi with Raspberry Pi OS. The steps are common across all supported models; differences are audio output configuration and memory headroom.
 
-> **Target:** Raspberry Pi Zero 2 W (512 MB RAM)
 > **OS:** Raspberry Pi OS Bookworm (Lite or Desktop)
-> **RAM:** App under 50 MB, total system under 64 MB
+> **Minimum hardware:** Raspberry Pi Zero 2 W (512 MB RAM)
+> **App footprint:** ~50 MB RAM for the player process
+
+---
+
+## Supported Models
+
+| Model | RAM | Analog jack | Recommended | Notes |
+|-------|-----|-------------|-------------|-------|
+| **Pi Zero 2 W** | 512 MB | ❌ No | Minimum spec | HDMI or I²S DAC only. Wi-Fi 4. Works, but tight on RAM |
+| **Pi 3 / 3 B+** | 1 GB | ✅ Yes | ✅ Good | Comfortable headroom. Same audio stack as Zero 2 W |
+| **Pi 4** | 1–8 GB | ✅ Yes | ✅ Best value | Gigabit Ethernet, dual HDMI, plenty of RAM |
+| **Pi 5** | 2–8 GB | ✅ Yes | ✅ Fastest | Different ALSA layout — see [Pi 5 section](#raspberry-pi-5-notes) |
+
+> **Recommendation:** Pi 4 (2 GB+) or Pi 5 for the smoothest experience. The Pi Zero 2 W is the minimum target and still meets all acceptance criteria, but leaves little RAM headroom alongside the OS.
 
 ---
 
@@ -12,13 +25,13 @@ Complete walkthrough for getting the music player running on a fresh Raspberry P
 
 | Item | Requirement |
 |------|-------------|
-| Hardware | Raspberry Pi Zero 2 W |
+| Hardware | Raspberry Pi Zero 2 W, Pi 3, Pi 4, or Pi 5 |
 | Storage | microSD card (8 GB minimum, 16 GB recommended) |
-| Power | 5V / 2.5A power supply |
-| Audio | HDMI, I²S DAC HAT, or USB DAC (Pi Zero 2 W has **no** 3.5mm jack) |
+| Power | 5V / 2.5A (Zero 2 W), 5V / 3A (Pi 3), 5V / 3A USB-C (Pi 4), 5V / 5A USB-C (Pi 5) |
+| Audio | HDMI, 3.5mm jack, I²S DAC HAT, or USB DAC (availability varies by model) |
 | Network | Wi-Fi or Ethernet |
 | Display | Touchscreen (capacitive/resistive via `/dev/input/eventX`) or headless |
-| Storage | NAS or local music files (SMB/NFS) |
+| Music | NAS or local music files (SMB/NFS) |
 
 ---
 
@@ -74,12 +87,9 @@ sudo chmod 755 /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/m
 
 **Important:** Replace the entire `/etc/mpd.conf`. Do not append to the stock config — Debian's default already contains `music_directory`, `database {}`, `bind_to_address`, and other settings that will conflict.
 
-```ini
-# MPD config for Raspberry Pi Zero 2 W
-# Audio output — HDMI (Pi Zero 2 W has no 3.5mm jack)
-# I²S DAC HAT users: change device to "hw:CARD=<cardname>,DEV=0"
-#   Use amixer -c <card> scontrols to find the control name
+### Common settings (all models)
 
+```ini
 music_directory    "/mnt/nas/music"
 playlist_directory "/var/lib/mpd/playlists"
 state_file         "/var/lib/mpd/state"
@@ -97,7 +107,25 @@ database {
     plugin          "simple"
     path            "/var/lib/mpd/mpd.db"
 }
+```
 
+### Audio output — choose the block for your model
+
+**Pi Zero 2 W (HDMI only — no 3.5mm jack):**
+
+```ini
+audio_output {
+    type        "alsa"
+    name        "Pi HDMI"
+    device      "hdmi:CARD=vc4hdmi,DEV=0"
+    mixer_type  "software"
+}
+```
+
+**Pi 3 / Pi 4 (HDMI or 3.5mm jack):**
+
+```ini
+# HDMI
 audio_output {
     type        "alsa"
     name        "Pi HDMI"
@@ -105,14 +133,55 @@ audio_output {
     mixer_type  "software"
 }
 
-# For I²S DAC HAT, replace the audio_output block with:
+# 3.5mm analog jack (comment out the HDMI block above and uncomment this)
 # audio_output {
 #     type        "alsa"
-#     name        "DAC HAT"
-#     device      "hw:CARD=<cardname>,DEV=0"
-#     mixer_type  "hardware"
-#     mixer_control "<control name>"
+#     name        "Pi Analog"
+#     device      "hw:CARD=Headphones,DEV=0"
+#     mixer_type  "software"
 # }
+```
+
+**Pi 5 (different ALSA layout — HDMI cards are numbered):**
+
+```ini
+# HDMI 0 (nearest the USB-C power port)
+audio_output {
+    type        "alsa"
+    name        "Pi 5 HDMI 0"
+    device      "hdmi:CARD=vc4hdmi0,DEV=0"
+    mixer_type  "software"
+}
+
+# HDMI 1 (second micro-HDMI port)
+# audio_output {
+#     type        "alsa"
+#     name        "Pi 5 HDMI 1"
+#     device      "hdmi:CARD=vc4hdmi1,DEV=0"
+#     mixer_type  "software"
+# }
+
+# 3.5mm analog jack
+# audio_output {
+#     type        "alsa"
+#     name        "Pi 5 Analog"
+#     device      "hw:CARD=Headphones,DEV=0"
+#     mixer_type  "software"
+# }
+```
+
+> **Finding the right device:** Run `aplay -L` to list PCM devices and `aplay -l` to list cards. If unsure, `device "default"` lets ALSA pick the system default.
+
+**I²S DAC HAT (any model) — replace the audio_output block with:**
+
+```ini
+audio_output {
+    type        "alsa"
+    name        "DAC HAT"
+    device      "hw:CARD=<cardname>,DEV=0"
+    mixer_type  "hardware"
+    mixer_control "<control name>"
+}
 # Run: amixer -c <card> scontrols  to list control names
 ```
 
@@ -270,16 +339,48 @@ sudo systemctl start music-player.service
 
 ---
 
+## Raspberry Pi 5 Notes
+
+The Pi 5 uses the **BCM2712** SoC and a different audio/display stack from earlier models. Key differences when running this player:
+
+### Audio
+
+- **Two micro-HDMI ports** map to two ALSA cards: `vc4hdmi0` (HDMI 0, nearest the USB-C power port) and `vc4hdmi1` (HDMI 1).
+- **No on-board analog audio changes** — the 3.5mm jack is present via the `Headphones` card, same as Pi 4.
+- Use `aplay -l` to confirm which HDMI card is active if you have both ports connected.
+- The `audio_output` block must name the specific HDMI card (`vc4hdmi0` or `vc4hdmi1`); a plain `vc4hdmi` will not match on Pi 5.
+
+### Power
+
+- Pi 5 requires a **5V / 5A USB-C** supply (official PSU recommended). Under-voltage throttles CPU and can cause audio dropouts.
+- Check throttling: `vcgencmd get_throttled` (non-zero means throttling occurred).
+
+### Display / Tkinter
+
+- Defaults to **Wayland** on Raspberry Pi OS Bookworm. Tkinter runs through **XWayland**; set `DISPLAY=:0` if launching from a service.
+- For a touchscreen, confirm the device is `/dev/input/eventX` and test with `evtest`.
+
+### Memory
+
+- Pi 5 has ample RAM (2–8 GB). The player's ~50 MB footprint is negligible; the 64 MB hard limit mentioned for the Zero does not apply, but the app still targets low memory by design.
+
+### NVMe / USB boot
+
+- Pi 5 supports NVMe via the M.2 HAT+ and USB boot. If your music library is on NVMe, point `music_directory` at the mount and skip the SMB/NFS steps.
+- Pi 5 firmware may need updating for NVMe boot: `sudo rpi-eeprom-update -a`.
+
+---
+
 ## Troubleshooting
 
 ### No audio output
 
 ```bash
-# Check ALSA devices
+# Check ALSA devices (note Pi 5 card names: vc4hdmi0 / vc4hdmi1)
 aplay -l
 
-# Test speaker
-speaker-test -c2
+# Test speaker (adjust -D if not using the default device)
+speaker-test -c2 -D hdmi:CARD=vc4hdmi,DEV=0
 
 # Check MPD audio config
 grep -A 10 audio_output /etc/mpd.conf
@@ -337,6 +438,26 @@ python3 main.py
 python3 -c "import tkinter; print(tkinter.TkVersion)"
 ```
 
+### Pi 5: no audio on HDMI
+
+```bash
+# Confirm which HDMI card is active and its index
+aplay -l | grep vc4hdmi
+
+# Pi 5 exposes vc4hdmi0 and vc4hdmi1 — match the port you are using
+# Verify MPD's device line points at the correct one
+grep device /etc/mpd.conf
+```
+
+### Pi 5: under-voltage / audio dropouts
+
+```bash
+# Check for throttling (0x0 = healthy)
+vcgencmd get_throttled
+
+# Ensure an official 5V/5A supply is used and the cable is rated for 5A
+```
+
 ### Music files not found
 
 ```bash
@@ -360,7 +481,14 @@ After boot and before running the player:
 free -h
 ```
 
-Expected Pi Zero 2 W idle: ~200-250 MB used by OS/MPD. Player should add <50 MB. Total under 300 MB to avoid swap.
+Approximate idle usage by model (OS + MPD):
+
+| Model | Idle (OS + MPD) | Player | Total |
+|-------|-----------------|--------|-------|
+| Pi Zero 2 W | ~200–250 MB | <50 MB | Under 300 MB (avoid swap) |
+| Pi 3 | ~300–400 MB | <50 MB | Comfortable on 1 GB |
+| Pi 4 | ~400–500 MB | <50 MB | Ample on 2 GB+ |
+| Pi 5 | ~500–700 MB | <50 MB | Negligible on 4 GB+ |
 
 Check player memory:
 
