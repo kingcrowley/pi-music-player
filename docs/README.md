@@ -34,7 +34,7 @@ Built with Python 3 + Tkinter + a **plugin architecture** that lets anyone add a
 | Document | Purpose |
 |----------|---------|
 | [`docs/README.md`](README.md) | This file — project overview and orientation |
-| [`docs/installation/pi-zero-setup.md`](installation/pi-zero-setup.md) | Raspberry Pi Zero 2W complete walkthrough |
+| [`docs/installation/raspberry-pi-setup.md`](installation/raspberry-pi-setup.md) | Raspberry Pi complete setup guide (all models) |
 | [`docs/installation/cross-distro.md`](installation/cross-distro.md) | Installation on Debian, Ubuntu, Fedora, Arch, Alpine, NixOS |
 | [`docs/installation/docker.md`](installation/docker.md) | Docker ARM64/amd64 deployment |
 | [`docs/configuration/mpd-setup.md`](configuration/mpd-setup.md) | MPD daemon configuration per audio backend |
@@ -68,7 +68,7 @@ Built with Python 3 + Tkinter + a **plugin architecture** that lets anyone add a
 
 New to this project? Start with:
 
-1. **`docs/installation/pi-zero-setup.md`** — if you're building on a Pi Zero 2 W
+1. **`docs/installation/raspberry-pi-setup.md`** — if you're building on any Raspberry Pi model (Pi Zero 2 W through Pi 5)
 2. **`docs/installation/cross-distro.md`** — if you're using another Linux distro
 3. **`docs/development/plugin-api.md`** — if you want to build a plugin
 4. **`docs/development/plugin-developer-guide.md`** — step-by-step plugin tutorial
