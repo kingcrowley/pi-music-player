@@ -273,7 +273,11 @@ class Dashboard(tk.Tk):
             text="📊",
             command=self._toggle_stats,
         )
-        self.stats_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
+        # Only show stats button when statistics are enabled
+        if self._stats is not None and self._stats.enabled:
+            self.stats_button.pack(side=tk.LEFT, padx=SPACING["sm"], pady=SPACING["sm"])
+        else:
+            self.stats_button.pack_forget()
 
         # Row 5: Status Label
         self.status_label = StatusLabel(self, text="Connecting…")
