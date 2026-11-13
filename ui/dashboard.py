@@ -661,7 +661,8 @@ class Dashboard(tk.Tk):
         song_unknown = not bool(song_file)
 
         # Detect transitions into active playback (stopped/paused -> playing).
-        transition_into_play = (state == "playing" and self._prev_state != "playing")
+        prev_state = self._prev_state
+        transition_into_play = (state == "playing" and prev_state != "playing")
 
         # Detect repeat-one: same queue-entry ID but elapsed dropped sharply.
         # Suppress when a user-initiated seek is pending (a backward seek also
@@ -685,34 +686,35 @@ class Dashboard(tk.Tk):
         self._prev_state = state
 
         # Empty reply handling.
-        # - While PLAYING, an empty songsong() is a transient MPD failure: keep
-        #   the active row and _current_song open so the next poll can resume.
-        # - While STOPPED (queue finished / cleared), an empty reply is the
-        #   real end of playback: finalize the open row and clear the display.
+        # An empty currentsong() is ambiguous: it can mean a transient MPD
+        # failure (keep the row open) or the real end of the queue (finalize).
+        # Distinguish by state:
+        #   - PLAYING or PAUSED with an empty reply => transient failure;
+        #     keep the active row and _current_song untouched.
+        #   - STOPPED with an empty reply => real end of queue; finalize the
+        #     open row once and clear the display. Do NOT run cleanup() on
+        #     every poll — only when transitioning out of a tracked song.
         if song_unknown:
-            if state == "playing":
+            if state in ("playing", "paused"):
                 # Transient failure — keep current state untouched.
                 return
-            # Playback stopped with no song: finalize the open row and
-            # clear the track display so it doesn't go stale.
-            if self._play_row_active and self._stats is not None and self._stats.enabled:
-                completed = (
-                    prev_elapsed is not None
-                    and prev_duration > 0
-                    and prev_elapsed >= min(prev_duration * 0.9, prev_duration - 2)
-                )
-                try:
-                    self._stats.record_play_end(completed=completed, skipped=not completed)
-                except Exception as e:
-                    logger.warning("record_play_end failed: %s", e)
-                self._play_row_active = False
-            self._current_song = None
-            self._update_track_info({})
-            if self._stats is not None:
-                try:
-                    self._stats.cleanup()
-                except Exception as e:
-                    logger.warning("cleanup failed: %s", e)
+            # State is stopped/unknown with no song.
+            if self._current_song is not None or self._play_row_active:
+                # Real end of the queue (or cleared queue): finalize once.
+                if self._play_row_active and self._stats is not None and self._stats.enabled:
+                    completed = (
+                        prev_elapsed is not None
+                        and prev_duration > 0
+                        and prev_elapsed >= min(prev_duration * 0.9, prev_duration - 2)
+                    )
+                    try:
+                        # A stop from another client is "stopped", not "skipped".
+                        self._stats.record_play_end(completed=completed, skipped=False)
+                    except Exception as e:
+                        logger.warning("record_play_end failed: %s", e)
+                    self._play_row_active = False
+                self._current_song = None
+                self._update_track_info({})
             return
 
         # Finalize the previous row before opening a new one. Derive

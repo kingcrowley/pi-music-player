@@ -604,7 +604,7 @@ class PlayStats:
             logger.warning("_cleanup_open_plays failed: %s", e)
 
     def _enforce_max_size(self) -> None:
-        """Prune oldest plays if database exceeds max_size_mb."""
+        """Prune oldest plays if database exceeds max_size_mb, then VACUUM to shrink file."""
         if not self.enabled:
             return
         try:
@@ -630,7 +630,9 @@ class PlayStats:
                 """,
                 (delete_count,),
             )
-            logger.info("Pruned %d oldest plays to enforce max_size_mb=%d", delete_count, self._max_size_mb)
+            # VACUUM to reclaim disk space and shrink the file
+            self._conn.execute("VACUUM")
+            logger.info("Pruned %d oldest plays and VACUUMed to enforce max_size_mb=%d", delete_count, self._max_size_mb)
         except Exception as e:
             logger.warning("_enforce_max_size failed: %s", e)
 
@@ -694,19 +696,16 @@ class PlayStats:
                     "skipping reset to avoid repeating it on every launch"
                 )
             else:
-                success = instance.reset_stats()
-                if success:
-                    config_owner.set("stats.reset", False)
-                    saved = config_owner.save()
-                    if not saved:
-                        logger.warning(
-                            "Failed to persist stats.reset=false; "
-                            "next launch will reset history again"
-                        )
-                        # Stop recording for the remainder of this session while
-                        # preserving connection cleanup: record_* is blocked but
-                        # close() still releases _conn.
-                        instance.enabled = False
+                # Persist the consumed flag BEFORE deleting history,
+                # so if save fails the flag remains true and we retry next launch.
+                config_owner.set("stats.reset", False)
+                saved = config_owner.save()
+                if not saved:
+                    logger.warning(
+                        "Failed to persist stats.reset=false; skipping reset"
+                    )
+                else:
+                    instance.reset_stats()
 
         return instance
 
