@@ -706,6 +706,15 @@ class Dashboard(tk.Tk):
         # Detect transitions into active playback (stopped/paused -> playing).
         prev_state = self._prev_state
         transition_into_play = (state == "playing" and prev_state != "playing")
+        # A transition out of playing into stopped/unknown ends the play even
+        # when the queue entry is unchanged. Handle it explicitly so a stop from
+        # another client finalizes the row (instead of being misread as a
+        # restart/skip) and a later replay opens a fresh row.
+        stopped_transition = (
+            state in ("stopped", "unknown")
+            and prev_state == "playing"
+            and not song_changed
+        )
 
         # Detect repeat-one: same queue-entry ID but elapsed dropped sharply.
         # Suppress when a user-initiated seek is pending (a backward seek also
@@ -713,19 +722,40 @@ class Dashboard(tk.Tk):
         prev_elapsed = self._last_elapsed
         prev_duration = self._last_duration
         seek_pending = self._seek_pending
-        self._seek_pending = False
+        # Consume the seek guard only once the background seek has been applied
+        # and its resulting position has been observed. _refresh_ui() calls
+        # _update_ui() with the post-seek position; the matching drop in elapsed
+        # is what proves the seek landed. Until then, keep the guard so an
+        # unrelated poll (or a poll that ran while the seek was still in flight)
+        # does not clear it and let the drop be misread as a restart.
         if song_changed:
             self._playback_restarted = False
-        elif seek_pending:
+            self._seek_pending = False
+        elif stopped_transition:
+            # A stop is not a restart; suppress restart detection for this poll.
             self._playback_restarted = False
+            self._seek_pending = False
+        elif seek_pending:
+            # Seek was applied and its position observed — consume the guard.
+            self._playback_restarted = False
+            self._seek_pending = False
         elif song_id == previous_id and prev_elapsed is not None and prev_elapsed > 5:
-            self._playback_restarted = elapsed < prev_elapsed * 0.5
+            if elapsed < prev_elapsed * 0.5:
+                self._playback_restarted = True
+            else:
+                self._playback_restarted = False
         else:
             self._playback_restarted = False
 
-        # Always update the baselines for the next poll.
-        self._last_elapsed = elapsed
-        self._last_duration = duration
+        # On an empty-song poll, do not replace the tracked song's timing
+        # baseline: the elapsed/duration belong to the previous entry until a
+        # valid song reply establishes which queue entry they describe. Doing so
+        # would make a later finalization use the wrong entry's numbers and mark
+        # the completed track as skipped instead.
+        if not song_unknown:
+            # Always update the baselines for the next poll.
+            self._last_elapsed = elapsed
+            self._last_duration = duration
         self._prev_state = state
 
         # Empty reply handling.
@@ -747,6 +777,7 @@ class Dashboard(tk.Tk):
                 if self._play_row_active and self._stats is not None and self._stats.enabled:
                     completed = (
                         prev_elapsed is not None
+                        and prev_duration > 0
                         and prev_elapsed >= self._completion_threshold(prev_duration)
                     )
                     try:
@@ -758,22 +789,33 @@ class Dashboard(tk.Tk):
                     self._maybe_cleanup()
                 self._current_song = None
                 self._update_track_info({})
+                # Clear artwork and invalidate any pending fetch so the old
+                # album art does not linger on the empty queue.
+                self._art_fetch_target = None
+                self.after(0, self.album_art.clear_art)
             return
 
-        # Finalize the previous row before opening a new one. Derive
-        # completed vs stopped/skipped from the last-seen elapsed/duration.
-        # Use min(90%, duration-2) so short tracks that end between polls
-        # are still counted as completed.
-        should_finalize = (song_changed or self._playback_restarted) and self._play_row_active
+        # Finalize the previous row when the queue entry changed, playback
+        # restarted (repeat-one), or playback stopped while this entry was
+        # still loaded. Use min(90%, duration-2) so short tracks that end
+        # between polls are still counted as completed.
+        should_finalize = (
+            song_changed or self._playback_restarted or stopped_transition
+        ) and self._play_row_active
         if should_finalize and self._stats is not None and self._stats.enabled:
             completed = (
                 prev_elapsed is not None
+                and prev_duration > 0
                 and prev_elapsed >= self._completion_threshold(prev_duration)
             )
             try:
-                # A song change below the completion threshold is a skip, not
-                # an unspecified "stopped" play, so the skip rate counts it.
-                self._stats.record_play_end(completed=completed, skipped=not completed)
+                if stopped_transition:
+                    # A stop from another client is "stopped", not "skipped".
+                    self._stats.record_play_end(completed=completed, skipped=False)
+                else:
+                    # A song change/restart below the completion threshold is a
+                    # skip, so the skip rate counts it.
+                    self._stats.record_play_end(completed=completed, skipped=not completed)
             except Exception as e:
                 logger.warning("record_play_end failed: %s", e)
             self._play_row_active = False

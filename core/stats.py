@@ -553,6 +553,20 @@ class PlayStats:
                     csv_path,
                 )
                 return None
+            # Reject hard links to the database. Both path comparisons above
+            # pass for a hard link because the names differ, so also compare
+            # file identity when the destination already exists.
+            try:
+                if os.path.exists(csv_path) and os.path.samefile(csv_path, self.db_path):
+                    logger.error(
+                        "Refusing to export to %s: path is a hard link to the active database file",
+                        csv_path,
+                    )
+                    return None
+            except OSError:
+                # samefile() can fail (e.g. on some filesystems); fall through
+                # to the write, which will report any error through the usual path.
+                pass
 
             cursor = self._conn.execute(
                 """
@@ -705,7 +719,14 @@ class PlayStats:
                         "Failed to persist stats.reset=false; skipping reset"
                     )
                 else:
-                    instance.reset_stats()
+                    if not instance.reset_stats():
+                        # Deletion failed, so the history is still there. Restore
+                        # the request so the next launch retries the reset.
+                        logger.warning(
+                            "stats reset failed; restoring reset request for next launch"
+                        )
+                        config_owner.set("stats.reset", True)
+                        config_owner.save()
 
         return instance
 
