@@ -120,10 +120,11 @@ class Dashboard(tk.Tk):
         self._stats_reset_pending = False
         # Track last elapsed time for repeat-one detection
         self._last_elapsed: Optional[float] = None
+        # Track last-seen duration for completed-vs-stopped classification
+        self._last_duration: float = 0.0
         # Flag: playback restarted on same queue entry (repeat-one)
         self._playback_restarted = False
-        # Flag: a user-initiated seek is in progress; suppress restart detection
-        # for the next poll so a backward seek isn't misread as a new play.
+        # Flag: a seek is in progress; suppress restart detection on next poll
         self._seek_pending = False
         # Previous MPD playback state for transition detection
         self._prev_state: Optional[str] = None
@@ -650,67 +651,74 @@ class Dashboard(tk.Tk):
         previous_id = None if previous_song is None else (previous_song.get("id") or previous_song.get("file"))
 
         song_changed = song_id != previous_id
-        # Unknown poll: get_current_song() returns {} when MPD fails. Do not
-        # treat this as a confirmed track ending — keep any active row open.
+        # Unknown poll: get_current_song() returns {} when MPD fails or nothing
+        # is playing. Keep the active row and _current_song as they are — an
+        # empty reply is not evidence that the track ended.
         song_unknown = not bool(song_file)
 
-        # Detect transitions into active playback.
+        # Detect transitions into active playback (stopped/paused -> playing).
         transition_into_play = (state == "playing" and self._prev_state != "playing")
 
-        # Detect repeat-one: same queue-entry ID but elapsed dropped sharply
-        # (a new play started from the beginning). Compare against the previous
-        # poll's elapsed, and always update the baseline for the next poll.
-        # Suppress restart detection when a user-initiated seek is pending —
-        # a backward seek also drops elapsed sharply.
+        # Detect repeat-one: same queue-entry ID but elapsed dropped sharply.
+        # Suppress when a user-initiated seek is pending (a backward seek also
+        # drops elapsed sharply).
         prev_elapsed = self._last_elapsed
+        prev_duration = self._last_duration
         seek_pending = self._seek_pending
         self._seek_pending = False
         if song_changed:
             self._playback_restarted = False
         elif seek_pending:
-            # A seek caused the elapsed change, not a restart.
             self._playback_restarted = False
         elif song_id == previous_id and prev_elapsed is not None and prev_elapsed > 5:
-            if elapsed < prev_elapsed * 0.5:
-                self._playback_restarted = True
-            else:
-                self._playback_restarted = False
+            self._playback_restarted = elapsed < prev_elapsed * 0.5
         else:
             self._playback_restarted = False
 
-        # Always update the baseline so the next poll compares against this one.
+        # Always update the baselines for the next poll.
         self._last_elapsed = elapsed
+        self._last_duration = duration
         self._prev_state = state
 
-        # On a song change, close the previous play row BEFORE opening the new
-        # one. This ensures the prior row is finalized and the new row is not
-        # immediately closed in the same poll.
-        if song_changed and self._play_row_active:
-            if self._stats is not None and self._stats.enabled:
-                try:
-                    self._stats.record_play_end(completed=True)
-                except Exception as e:
-                    logger.warning("record_play_end failed: %s", e)
-            self._play_row_active = False
+        # Unknown poll — skip stats/track updates; keep current state.
+        if song_unknown:
+            return
 
-        # On repeat-one restart, finalize the previous row so the repeat play
-        # becomes a separate completed row.
-        if self._playback_restarted and self._play_row_active:
-            if self._stats is not None and self._stats.enabled:
-                try:
-                    self._stats.record_play_end(completed=True)
-                except Exception as e:
-                    logger.warning("record_play_end failed: %s", e)
-            self._play_row_active = False
-
-        # Open a new play row when no row is active but a track is loaded and
-        # either the song changed or playback restarted on the same entry.
-        # Pause/resume does NOT qualify because _play_row_active stays True.
-        if (not self._play_row_active and bool(song_file)
-                and self._stats is not None and self._stats.enabled
-                and (song_changed or self._playback_restarted)):
+        # Finalize the previous row before opening a new one. Derive
+        # completed vs stopped from the last-seen elapsed/duration: a track
+        # counts as completed when it reached >= 90% of its length.
+        should_finalize = (song_changed or self._playback_restarted) and self._play_row_active
+        if should_finalize and self._stats is not None and self._stats.enabled:
+            completed = (
+                prev_elapsed is not None
+                and prev_duration > 0
+                and prev_elapsed >= prev_duration * 0.9
+            )
             try:
-                result = self._stats.record_play_start(song)
+                self._stats.record_play_end(completed=completed)
+            except Exception as e:
+                logger.warning("record_play_end failed: %s", e)
+            self._play_row_active = False
+
+        # Open a new row only when playback is actually active (state ==
+        # "playing"). Stopped/paused tracks never open a row.
+        should_open = (
+            not self._play_row_active
+            and bool(song_file)
+            and state == "playing"
+            and self._stats is not None
+            and self._stats.enabled
+            and (song_changed or self._playback_restarted or transition_into_play)
+        )
+        if should_open:
+            # currentsong() carries the track length under `time`, not
+            # `duration`; supply the duration from MPD status so playtime
+            # and the heatmap are recorded correctly.
+            song_for_stats = dict(song)
+            if duration > 0:
+                song_for_stats["duration"] = duration
+            try:
+                result = self._stats.record_play_start(song_for_stats)
                 if result:
                     self._play_row_active = True
                 self._playback_restarted = False
