@@ -19,7 +19,7 @@ docs/
 ├── README.md                         # Project overview, quickstart
 ├── installation/
 │   ├── README.md                     # Installation overview
-│   ├── pi-zero-setup.md              # Complete Pi Zero 2W walkthrough
+│   ├── raspberry-pi-setup.md         # Complete Raspberry Pi walkthrough (all models)
 │   ├── cross-distro.md              # Debian, Fedora, Arch, Alpine, NixOS
 │   └── docker.md                     # Docker deployment (ARM64)
 ├── configuration/
