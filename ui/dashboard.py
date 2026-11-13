@@ -439,7 +439,7 @@ class Dashboard(tk.Tk):
             bg=COLORS["bg"],
         ).pack(pady=SPACING["sm"])
 
-        # Content frame with canvas for scrolling
+        # Content frame with canvas for scrolling (mouse wheel + touch drag)
         stats_canvas = tk.Canvas(self._stats_frame, bg=COLORS["bg"], highlightthickness=0)
         v_scrollbar = tk.Scrollbar(self._stats_frame, orient=tk.VERTICAL, command=stats_canvas.yview)
         stats_canvas.configure(yscrollcommand=v_scrollbar.set)
@@ -455,6 +455,23 @@ class Dashboard(tk.Tk):
             stats_canvas.configure(scrollregion=stats_canvas.bbox("all"))
 
         self._stats_content.bind("<Configure>", _on_content_configure)
+
+        # Mouse-wheel scrolling (desktop) and touch-drag scrolling (Pi touchscreen)
+        def _on_wheel(event):
+            # Windows/Linux: event.delta is a multiple of 120; macOS: small ints.
+            step = -1 if event.delta > 0 else 1
+            stats_canvas.yview_scroll(step, "units")
+
+        def _on_drag_start(event):
+            stats_canvas.scan_mark(event.x, event.y)
+
+        def _on_drag_move(event):
+            stats_canvas.scan_dragto(event.x, event.y, gain=1)
+
+        stats_canvas.bind("<Enter>", lambda e: stats_canvas.bind_all("<MouseWheel>", _on_wheel))
+        stats_canvas.bind("<Leave>", lambda e: stats_canvas.unbind_all("<MouseWheel>"))
+        stats_canvas.bind("<ButtonPress-1>", _on_drag_start)
+        stats_canvas.bind("<B1-Motion>", _on_drag_move)
 
         # Back button
         TouchButton(
@@ -565,6 +582,7 @@ class Dashboard(tk.Tk):
         TouchButton(
             self._stats_content,
             text="Export CSV",
+            width=120,
             command=_export_csv,
         ).pack(side=tk.TOP, pady=SPACING["sm"])
 
@@ -886,6 +904,15 @@ class Dashboard(tk.Tk):
         self._polling = False
         if self._poll_thread:
             self._poll_thread.join(timeout=2.0)
+        if self._stats is not None:
+            try:
+                self._stats.cleanup()
+            except Exception as e:
+                logger.warning("stats cleanup failed: %s", e)
+            try:
+                self._stats.close()
+            except Exception as e:
+                logger.warning("stats close failed: %s", e)
         self.destroy()
 
 
