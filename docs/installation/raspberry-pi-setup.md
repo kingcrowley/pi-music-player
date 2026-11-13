@@ -2,7 +2,7 @@
 
 Complete walkthrough for getting the music player running on a Raspberry Pi with Raspberry Pi OS. The steps are common across all supported models; differences are audio output configuration and memory headroom.
 
-> **OS:** Raspberry Pi OS Bookworm (Lite or Desktop)
+> **OS:** Raspberry Pi OS Bookworm or later (Desktop recommended; Lite needs a display server, see Step 1)
 > **Minimum hardware:** Raspberry Pi Zero 2 W (512 MB RAM)
 > **App footprint:** ~50 MB RAM for the player process
 
@@ -14,8 +14,8 @@ Complete walkthrough for getting the music player running on a Raspberry Pi with
 |-------|-----|-------------|-------------|-------|
 | **Pi Zero 2 W** | 512 MB | ❌ No | Minimum spec | HDMI or I²S DAC only. Wi-Fi 4. Works, but tight on RAM |
 | **Pi 3 / 3 B+** | 1 GB | ✅ Yes | ✅ Good | Comfortable headroom. Same audio stack as Zero 2 W |
-| **Pi 4** | 1–8 GB | ✅ Yes | ✅ Best value | Gigabit Ethernet, dual HDMI, plenty of RAM |
-| **Pi 5** | 2–8 GB | ✅ Yes | ✅ Fastest | Different ALSA layout — see [Pi 5 section](#raspberry-pi-5-notes) |
+| **Pi 4** | 1–8 GB | ✅ Yes | ✅ Best value | Gigabit Ethernet, dual HDMI (two HDMI audio cards), plenty of RAM |
+| **Pi 5** | 2–16 GB | ❌ No | ✅ Fastest | No 3.5mm jack: HDMI, USB DAC or DAC HAT only — see [Pi 5 section](#raspberry-pi-5-notes) |
 
 > **Recommendation:** Pi 4 (2 GB+) or Pi 5 for the smoothest experience. The Pi Zero 2 W is the minimum target and still meets all acceptance criteria, but leaves little RAM headroom alongside the OS.
 
@@ -37,9 +37,9 @@ Complete walkthrough for getting the music player running on a Raspberry Pi with
 
 ## Step 1: Flash Raspberry Pi OS
 
-Download Raspberry Pi OS Bookworm from the official site and flash to microSD using Raspberry Pi Imager.
+Download Raspberry Pi OS (Bookworm or later) from the official site and flash to microSD using Raspberry Pi Imager. This guide was written against Bookworm; on newer releases, package and ALSA card names may differ slightly.
 
-> **Note:** The Desktop version includes X11 + Tkinter pre-installed. The Lite version requires manual X11 setup.
+> **Note:** The Desktop version includes a display server (Wayland, with XWayland for Tkinter) and is the simplest option. The Lite version has no display server: you must install and start one yourself (X11 or a Wayland compositor) before the player can open a window. That setup is not covered in this guide.
 
 Enable SSH during imaging (Raspberry Pi Imager → Advanced options → Enable SSH). Set a username and password during imaging — Bookworm does not default to `pi` / `raspberry`.
 
@@ -62,8 +62,8 @@ sudo apt update && sudo apt upgrade -y
 ## Step 3: Install System Dependencies
 
 ```bash
-# Install MPD + mpc + Python 3 + Tkinter + NAS tools
-sudo apt install -y mpd mpc python3 python3-pip python3-tk cifs-utils nfs-common
+# Install MPD + mpc + Python 3 + Tkinter + Pillow (album art) + NAS tools
+sudo apt install -y mpd mpc python3 python3-pip python3-tk python3-pil python3-pil.imagetk cifs-utils nfs-common
 
 # Create the player user
 sudo useradd -r -s /bin/false player
@@ -86,6 +86,8 @@ sudo chmod 755 /var/lib/mpd /var/lib/mpd/cache /var/lib/mpd/playlists /var/log/m
 ## Step 4: Configure MPD Audio Output
 
 **Important:** Replace the entire `/etc/mpd.conf`. Do not append to the stock config — Debian's default already contains `music_directory`, `database {}`, `bind_to_address`, and other settings that will conflict.
+
+> **Note:** The player reads `music_directory` from `/etc/mpd.conf` to locate album art, so the user that runs the player must be able to read this file. Check with `ls -l /etc/mpd.conf`. If it is restricted to a group (commonly `audio`), add your user to that group: `sudo usermod -aG audio <your-username>`, then log out and back in.
 
 ### Common settings (all models)
 
@@ -122,7 +124,7 @@ audio_output {
 }
 ```
 
-**Pi 3 / Pi 4 (HDMI or 3.5mm jack):**
+**Pi 3 (single HDMI port, or 3.5mm jack):**
 
 ```ini
 # HDMI
@@ -142,7 +144,35 @@ audio_output {
 # }
 ```
 
-**Pi 5 (different ALSA layout — HDMI cards are numbered):**
+**Pi 4 (two micro-HDMI ports, so HDMI cards are numbered; or 3.5mm jack):**
+
+```ini
+# HDMI 0 (nearest the USB-C power port)
+audio_output {
+    type        "alsa"
+    name        "Pi 4 HDMI 0"
+    device      "hdmi:CARD=vc4hdmi0,DEV=0"
+    mixer_type  "software"
+}
+
+# HDMI 1 (second micro-HDMI port)
+# audio_output {
+#     type        "alsa"
+#     name        "Pi 4 HDMI 1"
+#     device      "hdmi:CARD=vc4hdmi1,DEV=0"
+#     mixer_type  "software"
+# }
+
+# 3.5mm analog jack
+# audio_output {
+#     type        "alsa"
+#     name        "Pi 4 Analog"
+#     device      "hw:CARD=Headphones,DEV=0"
+#     mixer_type  "software"
+# }
+```
+
+**Pi 5 (two micro-HDMI ports, numbered like the Pi 4 — no 3.5mm jack):**
 
 ```ini
 # HDMI 0 (nearest the USB-C power port)
@@ -160,17 +190,11 @@ audio_output {
 #     device      "hdmi:CARD=vc4hdmi1,DEV=0"
 #     mixer_type  "software"
 # }
-
-# 3.5mm analog jack
-# audio_output {
-#     type        "alsa"
-#     name        "Pi 5 Analog"
-#     device      "hw:CARD=Headphones,DEV=0"
-#     mixer_type  "software"
-# }
 ```
 
-> **Finding the right device:** Run `aplay -L` to list PCM devices and `aplay -l` to list cards. If unsure, `device "default"` lets ALSA pick the system default.
+The Pi 5 has no on-board analog output. For headphones or line-out, use a USB DAC or an I²S DAC HAT (see below).
+
+> **Finding the right device:** Card names can vary between models and OS releases, so always confirm with `aplay -L` (PCM devices) and `aplay -l` (cards) before editing the block. If unsure, `device "default"` lets ALSA pick the system default.
 
 **I²S DAC HAT (any model) — replace the audio_output block with:**
 
@@ -246,6 +270,8 @@ pip3 install --break-system-packages python-mpd2 mutagen requests
 
 > **Note:** On Raspberry Pi OS Bookworm, `--break-system-packages` is required for pip-installed packages in the system Python. Alternatively, use a virtual environment.
 
+> **Note:** Pillow (required at startup, and used for album art) is installed from apt in Step 3 as `python3-pil` and `python3-pil.imagetk`. It is not listed in `requirements.txt`.
+
 ---
 
 ## Step 7: Deploy the Application
@@ -257,36 +283,37 @@ git clone <your-repo-url> pi-music-player
 cd pi-music-player
 ```
 
-Install:
+`requirements.txt` lists the same packages installed in Step 6. If you skipped Step 6, install them now:
 
 ```bash
 pip3 install --break-system-packages -r requirements.txt
-```
-
-Or install dependencies manually:
-
-```bash
-pip3 install --break-system-packages python-mpd2 mutagen requests
 ```
 
 ---
 
 ## Step 8: Run the Player
 
-Start MPD first (if not already running):
+Restart MPD so it picks up the new `/etc/mpd.conf` (installing the package already started it with the stock config):
 
 ```bash
-sudo systemctl start mpd
+sudo systemctl restart mpd
+mpc status
 ```
 
-Run the Python application:
+Run the Python application from a terminal in the Pi's desktop session:
 
 ```bash
 python3 main.py
 ```
 
+Over SSH there is no display, so point the player at the Pi's screen instead:
+
+```bash
+DISPLAY=:0 python3 main.py
+```
+
 Expected behavior:
-- Window opens fullscreen (touchscreen) or windowed (desktop)
+- Window opens fullscreen (the default). For a window instead, set `"ui": {"fullscreen": false}` in `config.json` in the project folder
 - Album art displays (or placeholder)
 - Track info updates when songs change
 - Play/pause, next/previous controls work
@@ -305,14 +332,14 @@ mpc play
 
 ## Step 9: Configure Auto-Start on Boot
 
-**Important:** Run as the desktop user, not `player`. The `player` user cannot access the X11/Wayland display or read `~/.local` Python packages installed as `pi`.
+**Important:** Run as the desktop user, not `player`. The `player` user cannot access the X11/Wayland display or read the `~/.local` Python packages installed for your own user.
 
 Create a systemd service (`/etc/systemd/system/music-player.service`):
 
 ```ini
 [Unit]
 Description=Pi Music Player
-After=network.target mpd.service
+After=network.target mpd.service graphical.target
 Wants=mpd.service
 
 [Service]
@@ -325,10 +352,12 @@ RestartSec=5
 Environment=DISPLAY=:0
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 ```
 
 Replace `<your-username>` with your actual username (e.g., `pi`, `david`, etc.).
+
+> **Note:** The service needs a running desktop session on the Pi's screen (Raspberry Pi OS Desktop with auto-login). If the display is not ready when the service starts, the player exits and systemd retries every 5 seconds.
 
 Enable:
 
@@ -341,14 +370,14 @@ sudo systemctl start music-player.service
 
 ## Raspberry Pi 5 Notes
 
-The Pi 5 uses the **BCM2712** SoC and a different audio/display stack from earlier models. Key differences when running this player:
+The Pi 5 uses the **BCM2712** SoC. Key points when running this player:
 
 ### Audio
 
-- **Two micro-HDMI ports** map to two ALSA cards: `vc4hdmi0` (HDMI 0, nearest the USB-C power port) and `vc4hdmi1` (HDMI 1).
-- **No on-board analog audio changes** — the 3.5mm jack is present via the `Headphones` card, same as Pi 4.
+- **Two micro-HDMI ports** map to two ALSA cards: `vc4hdmi0` (HDMI 0, nearest the USB-C power port) and `vc4hdmi1` (HDMI 1). The Pi 4 uses the same names.
+- **No 3.5mm jack** — unlike the Pi 3 and Pi 4, the Pi 5 has no on-board analog output and no `Headphones` card. Use HDMI, a USB DAC, or an I²S DAC HAT.
 - Use `aplay -l` to confirm which HDMI card is active if you have both ports connected.
-- The `audio_output` block must name the specific HDMI card (`vc4hdmi0` or `vc4hdmi1`); a plain `vc4hdmi` will not match on Pi 5.
+- The `audio_output` block must name the specific HDMI card (`vc4hdmi0` or `vc4hdmi1`); a plain `vc4hdmi` will not match on Pi 4 or Pi 5.
 
 ### Power
 
@@ -357,12 +386,12 @@ The Pi 5 uses the **BCM2712** SoC and a different audio/display stack from earli
 
 ### Display / Tkinter
 
-- Defaults to **Wayland** on Raspberry Pi OS Bookworm. Tkinter runs through **XWayland**; set `DISPLAY=:0` if launching from a service.
+- Like the other models on Raspberry Pi OS Bookworm Desktop, the Pi 5 defaults to **Wayland**. Tkinter runs through **XWayland**; set `DISPLAY=:0` if launching from a service or over SSH.
 - For a touchscreen, confirm the device is `/dev/input/eventX` and test with `evtest`.
 
 ### Memory
 
-- Pi 5 has ample RAM (2–8 GB). The player's ~50 MB footprint is negligible; the 64 MB hard limit mentioned for the Zero does not apply, but the app still targets low memory by design.
+- Pi 5 has ample RAM (2–16 GB). The player's ~50 MB footprint is negligible. The 64 MB hard limit in `PHASE_DEVELOPMENT_PLAN.md` exists for the Pi Zero 2 W; it is not a constraint here, but the app still targets low memory by design.
 
 ### NVMe / USB boot
 
@@ -376,10 +405,11 @@ The Pi 5 uses the **BCM2712** SoC and a different audio/display stack from earli
 ### No audio output
 
 ```bash
-# Check ALSA devices (note Pi 5 card names: vc4hdmi0 / vc4hdmi1)
+# Check ALSA devices (note Pi 4 / Pi 5 card names: vc4hdmi0 / vc4hdmi1)
 aplay -l
 
-# Test speaker (adjust -D if not using the default device)
+# Test speaker. Stop MPD first (sudo systemctl stop mpd) or the device will be busy.
+# Use vc4hdmi0 or vc4hdmi1 on Pi 4 / Pi 5.
 speaker-test -c2 -D hdmi:CARD=vc4hdmi,DEV=0
 
 # Check MPD audio config
@@ -427,6 +457,13 @@ sudo systemctl disable --now mpd.socket
 sudo systemctl restart mpd
 ```
 
+### "ModuleNotFoundError: No module named 'PIL'"
+
+```bash
+# Pillow is missing — install it and its Tk bindings
+sudo apt install -y python3-pil python3-pil.imagetk
+```
+
 ### Tkinter won't start (Bookworm Wayland)
 
 ```bash
@@ -438,13 +475,13 @@ python3 main.py
 python3 -c "import tkinter; print(tkinter.TkVersion)"
 ```
 
-### Pi 5: no audio on HDMI
+### Pi 4 / Pi 5: no audio on HDMI
 
 ```bash
 # Confirm which HDMI card is active and its index
 aplay -l | grep vc4hdmi
 
-# Pi 5 exposes vc4hdmi0 and vc4hdmi1 — match the port you are using
+# Pi 4 and Pi 5 expose vc4hdmi0 and vc4hdmi1 — match the port you are using
 # Verify MPD's device line points at the correct one
 grep device /etc/mpd.conf
 ```
@@ -481,7 +518,7 @@ After boot and before running the player:
 free -h
 ```
 
-Approximate idle usage by model (OS + MPD):
+Estimated idle usage by model (OS + MPD). These are estimates, not measurements; check your own system with `free -h`:
 
 | Model | Idle (OS + MPD) | Player | Total |
 |-------|-----------------|--------|-------|
