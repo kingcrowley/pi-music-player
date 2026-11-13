@@ -611,6 +611,31 @@ class Dashboard(tk.Tk):
         }
         return mapping.get(state, "unknown")
 
+    @staticmethod
+    def _completion_threshold(duration: float) -> float:
+        """Return the elapsed-seconds threshold at which a track counts as completed.
+
+        Uses 90% of the track length, but never less than 2 seconds below the
+        end and never below 1 second. The floor stops very short tracks
+        (duration <= 2s) from being marked complete the instant they start.
+        """
+        if duration <= 0:
+            return float("inf")  # unknown length: never auto-complete
+        return max(1.0, min(duration * 0.9, duration - 2.0))
+
+    def _maybe_cleanup(self) -> None:
+        """Run PlayStats cleanup (close old open plays + enforce max size).
+
+        Called after a play row is finalized, not on every poll, so the size
+        prune runs only when a play actually ends.
+        """
+        if self._stats is None or not self._stats.enabled:
+            return
+        try:
+            self._stats.cleanup()
+        except Exception as e:
+            logger.warning("stats cleanup failed: %s", e)
+
     def _update_ui(self, status: Dict[str, Any], song: Dict[str, Any]) -> None:
         """Update UI elements on main thread."""
         # Update status
@@ -704,8 +729,7 @@ class Dashboard(tk.Tk):
                 if self._play_row_active and self._stats is not None and self._stats.enabled:
                     completed = (
                         prev_elapsed is not None
-                        and prev_duration > 0
-                        and prev_elapsed >= min(prev_duration * 0.9, prev_duration - 2)
+                        and prev_elapsed >= self._completion_threshold(prev_duration)
                     )
                     try:
                         # A stop from another client is "stopped", not "skipped".
@@ -713,6 +737,7 @@ class Dashboard(tk.Tk):
                     except Exception as e:
                         logger.warning("record_play_end failed: %s", e)
                     self._play_row_active = False
+                    self._maybe_cleanup()
                 self._current_song = None
                 self._update_track_info({})
             return
@@ -725,8 +750,7 @@ class Dashboard(tk.Tk):
         if should_finalize and self._stats is not None and self._stats.enabled:
             completed = (
                 prev_elapsed is not None
-                and prev_duration > 0
-                and prev_elapsed >= min(prev_duration * 0.9, prev_duration - 2)
+                and prev_elapsed >= self._completion_threshold(prev_duration)
             )
             try:
                 # A song change below the completion threshold is a skip, not
@@ -735,6 +759,7 @@ class Dashboard(tk.Tk):
             except Exception as e:
                 logger.warning("record_play_end failed: %s", e)
             self._play_row_active = False
+            self._maybe_cleanup()
 
         # Open a new row only when playback is actually active (state ==
         # "playing"). Stopped/paused tracks never open a row.
