@@ -468,6 +468,11 @@ class Dashboard(tk.Tk):
         def _on_drag_move(event):
             stats_canvas.scan_dragto(event.x, event.y, gain=1)
 
+        # Bind on the content frame and its labels too: the labels are
+        # children of _stats_content, not the canvas, so a drag that starts on
+        # the text would otherwise do nothing.
+        self._stats_content.bind("<ButtonPress-1>", _on_drag_start)
+        self._stats_content.bind("<B1-Motion>", _on_drag_move)
         stats_canvas.bind("<Enter>", lambda e: stats_canvas.bind_all("<MouseWheel>", _on_wheel))
         stats_canvas.bind("<Leave>", lambda e: stats_canvas.unbind_all("<MouseWheel>"))
         stats_canvas.bind("<ButtonPress-1>", _on_drag_start)
@@ -918,6 +923,15 @@ class Dashboard(tk.Tk):
         self._polling = False
         if self._poll_thread:
             self._poll_thread.join(timeout=2.0)
+        # Close any play row still open so quitting mid-track does not leave
+        # an unbounded open row behind.
+        if (self._play_row_active
+                and self._stats is not None and self._stats.enabled):
+            try:
+                self._stats.record_play_end(completed=False)
+                self._play_row_active = False
+            except Exception as e:
+                logger.warning("record_play_end on close failed: %s", e)
         if self._stats is not None:
             try:
                 self._stats.cleanup()
