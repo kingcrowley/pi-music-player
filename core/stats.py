@@ -335,6 +335,267 @@ class PlayStats:
             logger.warning("get_artist_stats failed: %s", e)
             return {"plays": 0, "playtime_ms": 0}
 
+    # --- Statistics UI Queries (Slice 2.2) ---
+
+    def get_artist_playcounts(self) -> Dict[str, int]:
+        """Get total completed play counts per artist.
+
+        Returns:
+            Dict mapping artist name to completed play count.
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT artist, COUNT(*) as cnt
+                FROM plays
+                WHERE completed = 1 AND artist IS NOT NULL AND artist != ''
+                GROUP BY artist
+                ORDER BY cnt DESC
+                """
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_artist_playcounts failed: %s", e)
+            return {}
+
+    def get_album_playcounts(self) -> Dict[tuple, int]:
+        """Get total completed play counts per album.
+
+        Returns:
+            Dict mapping (artist, album) tuple to completed play count.
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT artist, album, COUNT(*) as cnt
+                FROM plays
+                WHERE completed = 1 AND album IS NOT NULL AND album != ''
+                GROUP BY artist, album
+                ORDER BY cnt DESC
+                """
+            )
+            return {(row[0], row[1]): row[2] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_album_playcounts failed: %s", e)
+            return {}
+
+    def get_skip_rate(self, artist: Optional[str] = None) -> Dict[str, float]:
+        """Get skip rate (skips / total plays) for all artists, or a specific artist.
+
+        Args:
+            artist: Optional artist name to filter by. If None, returns all.
+
+        Returns:
+            Dict mapping artist (or "Artist - Album") to skip percentage (0.0-100.0).
+            Empty dict if disabled or error.
+        """
+        if not self.enabled:
+            return {}
+        try:
+            if artist is not None:
+                cursor = self._conn.execute(
+                    """
+                    SELECT album,
+                           SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
+                    FROM plays
+                    WHERE (completed = 1 OR skipped = 1) AND artist = ?
+                    GROUP BY album
+                    ORDER BY pct DESC
+                    """,
+                    (artist,),
+                )
+                return {f"{artist} - {row[0]}": row[1] for row in cursor.fetchall()}
+            else:
+                cursor = self._conn.execute(
+                    """
+                    SELECT artist,
+                           SUM(CASE WHEN skipped = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct
+                    FROM plays
+                    WHERE completed = 1 OR skipped = 1
+                    GROUP BY artist
+                    ORDER BY pct DESC
+                    """
+                )
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.warning("get_skip_rate failed: %s", e)
+            return {}
+
+    def get_listening_time_heatmap(self) -> Dict[str, Dict[int, int]]:
+        """Get listening time heatmap by hour of day and day of week.
+
+        Returns:
+            Dict mapping day-of-week (0=Mon..6=Sun) to hour->minutes mapping.
+            Empty dict if disabled or error.
+
+        Example:
+            {0: {8: 120, 9: 45, ...}, 1: {9: 30, ...}, ...}
+        """
+        if not self.enabled:
+            return {}
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT started_at, duration_ms
+                FROM plays
+                WHERE completed = 1 AND duration_ms IS NOT NULL
+                """
+            )
+            rows = cursor.fetchall()
+            # Accumulate milliseconds per bucket to avoid per-overlap rounding
+            ms_heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
+            for started_at, duration_ms in rows:
+                # Distribute play time across all hours it overlaps
+                remaining_ms = duration_ms
+                current_ts = started_at
+                while remaining_ms > 0:
+                    dt = time.localtime(current_ts)
+                    day = dt.tm_wday  # 0=Mon
+                    hour = dt.tm_hour
+                    # Calculate seconds remaining in the LOCAL hour using local minute/second
+                    sec_in_hour = 3600 - (dt.tm_min * 60 + dt.tm_sec)
+                    ms_in_this_hour = min(remaining_ms, sec_in_hour * 1000)
+                    if ms_in_this_hour > 0:
+                        ms_heatmap[day][hour] = ms_heatmap[day].get(hour, 0) + ms_in_this_hour
+                    remaining_ms -= ms_in_this_hour
+                    current_ts += ms_in_this_hour / 1000.0
+            # Convert accumulated ms to minutes after all plays
+            heatmap: Dict[int, Dict[int, int]] = {d: {} for d in range(7)}
+            for day, hour_map in ms_heatmap.items():
+                for hour, ms in hour_map.items():
+                    heatmap[day][hour] = ms // 60000
+            return heatmap
+        except Exception as e:
+            logger.warning("get_listening_time_heatmap failed: %s", e)
+            return {}
+
+    def get_recent_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent play history (completed plays only).
+
+        Args:
+            limit: Maximum number of entries to return (default: 20).
+
+        Returns:
+            List of play dicts with full metadata, most recent first.
+        """
+        if not self.enabled:
+            return []
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT id, track_path, artist, album, title,
+                       started_at, ended_at, completed, skipped, duration_ms
+                FROM plays
+                WHERE completed = 1
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "file": row[1],
+                    "artist": row[2],
+                    "album": row[3],
+                    "title": row[4],
+                    "started_at": row[5],
+                    "ended_at": row[6],
+                    "completed": bool(row[7]),
+                    "skipped": bool(row[8]),
+                    "duration_ms": row[9],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.warning("get_recent_history failed: %s", e)
+            return []
+
+    def export_csv(self, csv_path: Optional[str] = None) -> Optional[str]:
+        """Export all completed plays to a CSV file.
+
+        Args:
+            csv_path: Optional path for output CSV. If None, uses
+                      play_stats.csv in the same directory as the database.
+
+        Returns:
+            Path to written CSV file, or None if disabled or error.
+        """
+        if not self.enabled:
+            return None
+        try:
+            import csv as csv_module
+            if csv_path is None:
+                csv_path = str(Path(self.db_path).with_name("play_stats.csv"))
+
+            # Reject paths that identify the database file itself, including
+            # equivalent paths and symbolic links, to prevent truncating the
+            # active database.
+            csv_abs = os.path.abspath(csv_path)
+            db_abs = os.path.abspath(self.db_path)
+            # Resolve symlinks for both paths before comparing
+            try:
+                csv_real = os.path.realpath(csv_path)
+                db_real = os.path.realpath(self.db_path)
+            except (OSError, RuntimeError):
+                csv_real = csv_abs
+                db_real = db_abs
+            if csv_abs == db_abs or csv_real == db_real:
+                logger.error(
+                    "Refusing to export to %s: path identifies the active database file",
+                    csv_path,
+                )
+                return None
+            # Reject hard links to the database. Both path comparisons above
+            # pass for a hard link because the names differ, so also compare
+            # file identity when the destination already exists.
+            try:
+                if os.path.exists(csv_path) and os.path.samefile(csv_path, self.db_path):
+                    logger.error(
+                        "Refusing to export to %s: path is a hard link to the active database file",
+                        csv_path,
+                    )
+                    return None
+            except OSError:
+                # samefile() can fail (e.g. on some filesystems); fall through
+                # to the write, which will report any error through the usual path.
+                pass
+
+            cursor = self._conn.execute(
+                """
+                SELECT id, track_path, artist, album, title,
+                       started_at, ended_at, completed, skipped, duration_ms
+                FROM plays
+                WHERE completed = 1
+                ORDER BY id ASC
+                """
+            )
+            rows = cursor.fetchall()
+
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv_module.writer(f)
+                writer.writerow([
+                    "id", "file", "artist", "album", "title",
+                    "started_at", "ended_at", "completed", "skipped", "duration_ms"
+                ])
+                for row in rows:
+                    writer.writerow([
+                        row[0], row[1], row[2], row[3], row[4],
+                        row[5], row[6], int(row[7]), int(row[8]), row[9]
+                    ])
+            logger.info("Exported %d plays to %s", len(rows), csv_path)
+            return csv_path
+        except Exception as e:
+            logger.warning("export_csv failed: %s", e)
+            return None
+
     # --- Cleanup / retention ---
 
     def _cleanup_open_plays(self) -> None:
@@ -357,7 +618,7 @@ class PlayStats:
             logger.warning("_cleanup_open_plays failed: %s", e)
 
     def _enforce_max_size(self) -> None:
-        """Prune oldest plays if database exceeds max_size_mb."""
+        """Prune oldest plays if database exceeds max_size_mb, then VACUUM to shrink file."""
         if not self.enabled:
             return
         try:
@@ -383,7 +644,9 @@ class PlayStats:
                 """,
                 (delete_count,),
             )
-            logger.info("Pruned %d oldest plays to enforce max_size_mb=%d", delete_count, self._max_size_mb)
+            # VACUUM to reclaim disk space and shrink the file
+            self._conn.execute("VACUUM")
+            logger.info("Pruned %d oldest plays and VACUUMed to enforce max_size_mb=%d", delete_count, self._max_size_mb)
         except Exception as e:
             logger.warning("_enforce_max_size failed: %s", e)
 
@@ -412,13 +675,16 @@ class PlayStats:
     # --- Config integration ---
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "PlayStats":
+    def from_config(cls, config: Dict[str, Any], config_owner: Optional[Any] = None) -> "PlayStats":
         """Create a PlayStats instance from a config dict.
 
-        Reads stats.enabled, stats.db_path from config.
+        Reads stats.enabled, stats.db_path, stats.max_size_mb,
+        stats.retention_days, and stats.reset from config.
 
         Args:
             config: Configuration dict with stats section
+            config_owner: Optional Config instance (or object with set() and save()
+                          methods) to persist the consumed stats.reset flag.
 
         Returns:
             PlayStats instance (disabled if stats.enabled is False)
@@ -426,4 +692,57 @@ class PlayStats:
         stats_cfg = config.get("stats", {}) if isinstance(config, dict) else {}
         enabled = stats_cfg.get("enabled", True)
         db_path = stats_cfg.get("db_path", cls.DEFAULT_DB_PATH)
-        return cls(db_path=db_path, enabled=enabled)
+        max_size_mb = stats_cfg.get("max_size_mb", 10)
+        retention_days = stats_cfg.get("retention_days", 365)
+        stats_reset = stats_cfg.get("reset", False)
+
+        instance = cls(db_path=db_path, enabled=enabled)
+        instance._max_size_mb = max_size_mb
+        instance._retention_seconds = retention_days * 24 * 3600
+
+        # One-time reset: clear all stored plays and consume the flag.
+        # This requires a config_owner to persist the consumed flag.
+        # If no owner is provided, skip the reset and log a warning.
+        if stats_reset and enabled:
+            if config_owner is None:
+                logger.warning(
+                    "stats.reset=True but no config_owner provided; "
+                    "skipping reset to avoid repeating it on every launch"
+                )
+            else:
+                # Persist the consumed flag BEFORE deleting history,
+                # so if save fails the flag remains true and we retry next launch.
+                config_owner.set("stats.reset", False)
+                saved = config_owner.save()
+                if not saved:
+                    logger.warning(
+                        "Failed to persist stats.reset=false; skipping reset"
+                    )
+                else:
+                    if not instance.reset_stats():
+                        # Deletion failed, so the history is still there. Restore
+                        # the request so the next launch retries the reset.
+                        logger.warning(
+                            "stats reset failed; restoring reset request for next launch"
+                        )
+                        config_owner.set("stats.reset", True)
+                        config_owner.save()
+
+        return instance
+
+    def reset_stats(self) -> bool:
+        """Clear all play history from the database.
+
+        Returns:
+            bool: True if reset succeeded, False if disabled or error.
+        """
+        if not self.enabled:
+            return False
+        try:
+            self._conn.execute("DELETE FROM plays")
+            self._conn.execute("DELETE FROM sqlite_sequence WHERE name = 'plays'")
+            logger.info("Play statistics reset")
+            return True
+        except Exception as e:
+            logger.warning("reset_stats failed: %s", e)
+            return False
