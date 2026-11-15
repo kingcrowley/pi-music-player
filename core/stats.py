@@ -518,6 +518,48 @@ class PlayStats:
             logger.warning("get_recent_history failed: %s", e)
             return []
 
+    def get_top_tracks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get top tracks by play count (completed plays only).
+
+        Args:
+            limit: Maximum number of tracks to return (default: 20).
+
+        Returns:
+            List of track dicts with play counts, most played first.
+        """
+        if not self.enabled:
+            return []
+        try:
+            cursor = self._conn.execute(
+                """
+                SELECT track_path, artist, album, title, COUNT(*) as play_count,
+                       SUM(duration_ms) as total_duration_ms,
+                       MAX(ended_at) as last_played
+                FROM plays
+                WHERE completed = 1 AND track_path IS NOT NULL AND track_path != ''
+                GROUP BY track_path, artist, album, title
+                ORDER BY play_count DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "file": row[0],
+                    "artist": row[1],
+                    "album": row[2],
+                    "title": row[3],
+                    "play_count": row[4],
+                    "total_duration_ms": row[5],
+                    "last_played": row[6],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.warning("get_top_tracks failed: %s", e)
+            return []
+
     def export_csv(self, csv_path: Optional[str] = None) -> Optional[str]:
         """Export all completed plays to a CSV file.
 
@@ -651,11 +693,36 @@ class PlayStats:
             logger.warning("_enforce_max_size failed: %s", e)
 
     def cleanup(self) -> None:
-        """Run cleanup: close old open plays and enforce max size."""
+        """Run cleanup: close old open plays and enforce max size.
+
+        Also deletes plays older than the retention window so the database
+        doesn't grow unbounded over time.
+        """
         if not self.enabled:
             return
         self._cleanup_open_plays()
         self._enforce_max_size()
+        self._delete_old_plays()
+
+    def _delete_old_plays(self) -> None:
+        """Delete completed plays older than retention_seconds.
+
+        Retention window is derived from stats.retention_days (default 365 days).
+        """
+        if not self.enabled:
+            return
+        try:
+            cutoff = int(time.time()) - self._retention_seconds
+            self._conn.execute(
+                """
+                DELETE FROM plays
+                WHERE completed = 1 AND ended_at < ?
+                """,
+                (cutoff,),
+            )
+            logger.info("Deleted plays older than retention window", extra={"cutoff": cutoff})
+        except Exception as e:
+            logger.warning("_delete_old_plays failed: %s", e)
 
     def close(self) -> None:
         """Close the SQLite connection and perform WAL checkpoint.

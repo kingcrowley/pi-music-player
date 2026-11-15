@@ -440,19 +440,19 @@ class Dashboard(tk.Tk):
         ).pack(pady=SPACING["sm"])
 
         # Content frame with canvas for scrolling (mouse wheel + touch drag)
-        stats_canvas = tk.Canvas(self._stats_frame, bg=COLORS["bg"], highlightthickness=0)
-        v_scrollbar = tk.Scrollbar(self._stats_frame, orient=tk.VERTICAL, command=stats_canvas.yview)
-        stats_canvas.configure(yscrollcommand=v_scrollbar.set)
+        self._stats_canvas = tk.Canvas(self._stats_frame, bg=COLORS["bg"], highlightthickness=0)
+        v_scrollbar = tk.Scrollbar(self._stats_frame, orient=tk.VERTICAL, command=self._stats_canvas.yview)
+        self._stats_canvas.configure(yscrollcommand=v_scrollbar.set)
 
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        stats_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=SPACING["md"], pady=SPACING["md"])
+        self._stats_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=SPACING["md"], pady=SPACING["md"])
 
-        self._stats_content = tk.Frame(stats_canvas, bg=COLORS["bg"])
-        stats_canvas.create_window((0, 0), window=self._stats_content, anchor="nw")
+        self._stats_content = tk.Frame(self._stats_canvas, bg=COLORS["bg"])
+        self._stats_canvas.create_window((0, 0), window=self._stats_content, anchor="nw")
 
         # Update scroll region when content changes
         def _on_content_configure(event):
-            stats_canvas.configure(scrollregion=stats_canvas.bbox("all"))
+            self._stats_canvas.configure(scrollregion=self._stats_canvas.bbox("all"))
 
         self._stats_content.bind("<Configure>", _on_content_configure)
 
@@ -460,23 +460,22 @@ class Dashboard(tk.Tk):
         def _on_wheel(event):
             # Windows/Linux: event.delta is a multiple of 120; macOS: small ints.
             step = -1 if event.delta > 0 else 1
-            stats_canvas.yview_scroll(step, "units")
-
-        def _on_drag_start(event):
-            stats_canvas.scan_mark(event.x, event.y)
-
-        def _on_drag_move(event):
-            stats_canvas.scan_dragto(event.x, event.y, gain=1)
+            self._stats_canvas.yview_scroll(step, "units")
 
         # Bind on the content frame and its labels too: the labels are
         # children of _stats_content, not the canvas, so a drag that starts on
         # the text would otherwise do nothing.
-        self._stats_content.bind("<ButtonPress-1>", _on_drag_start)
-        self._stats_content.bind("<B1-Motion>", _on_drag_move)
-        stats_canvas.bind("<Enter>", lambda e: stats_canvas.bind_all("<MouseWheel>", _on_wheel))
-        stats_canvas.bind("<Leave>", lambda e: stats_canvas.unbind_all("<MouseWheel>"))
-        stats_canvas.bind("<ButtonPress-1>", _on_drag_start)
-        stats_canvas.bind("<B1-Motion>", _on_drag_move)
+        self._stats_content.bind("<ButtonPress-1>", self._on_stats_drag_start)
+        self._stats_content.bind("<B1-Motion>", self._on_stats_drag_move)
+        self._stats_canvas.bind("<Enter>", lambda e: self._stats_canvas.bind_all("<MouseWheel>", _on_wheel))
+        self._stats_canvas.bind("<Leave>", lambda e: self._stats_canvas.unbind_all("<MouseWheel>"))
+        self._stats_canvas.bind("<ButtonPress-1>", self._on_stats_drag_start)
+        self._stats_canvas.bind("<B1-Motion>", self._on_stats_drag_move)
+
+        def _bind_label_drag(label):
+            """Bind drag handlers on a label so touch-drag works over text."""
+            label.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            label.bind("<B1-Motion>", self._on_stats_drag_move)
 
         # Back button
         TouchButton(
@@ -485,6 +484,14 @@ class Dashboard(tk.Tk):
             width=120,
             command=self._toggle_stats,
         ).pack(side=tk.BOTTOM, pady=SPACING["sm"])
+
+    def _on_stats_drag_start(self, event):
+        """Start a drag scroll on the stats canvas."""
+        self._stats_canvas.scan_mark(event.x, event.y)
+
+    def _on_stats_drag_move(self, event):
+        """Drag-scroll the stats canvas while tracking the cursor."""
+        self._stats_canvas.scan_dragto(event.x, event.y, gain=1)
 
     def _refresh_stats_content(self) -> None:
         """Refresh stats content with latest data."""
@@ -499,7 +506,7 @@ class Dashboard(tk.Tk):
         artist_playcounts = self._stats.get_artist_playcounts()
         if artist_playcounts:
             artist_text = "\n".join([f"{a}: {c} plays" for a, c in list(artist_playcounts.items())[:5]])
-            tk.Label(
+            lbl = tk.Label(
                 self._stats_content,
                 text="Top Artists\n" + artist_text,
                 font=FONTS["artist"],
@@ -507,7 +514,10 @@ class Dashboard(tk.Tk):
                 bg=COLORS["bg"],
                 justify=tk.LEFT,
                 wraplength=400,
-            ).pack(pady=SPACING["xs"], anchor=tk.W)
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
 
         # Top Albums
         album_playcounts = self._stats.get_album_playcounts()
@@ -516,7 +526,7 @@ class Dashboard(tk.Tk):
             album_text = "\n".join(
                 [f"{a} - {al}: {c} plays" for (a, al), c in list(album_playcounts.items())[:5]]
             )
-            tk.Label(
+            lbl = tk.Label(
                 self._stats_content,
                 text="Top Albums\n" + album_text,
                 font=FONTS["album"],
@@ -524,13 +534,16 @@ class Dashboard(tk.Tk):
                 bg=COLORS["bg"],
                 justify=tk.LEFT,
                 wraplength=400,
-            ).pack(pady=SPACING["xs"], anchor=tk.W)
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
 
         # Skip Rate
         skip_rates = self._stats.get_skip_rate()
         if skip_rates:
             skip_text = "\n".join([f"{a}: {r:.0f}%" for a, r in list(skip_rates.items())[:5]])
-            tk.Label(
+            lbl = tk.Label(
                 self._stats_content,
                 text="Skip Rate\n" + skip_text,
                 font=FONTS["status"],
@@ -538,7 +551,10 @@ class Dashboard(tk.Tk):
                 bg=COLORS["bg"],
                 justify=tk.LEFT,
                 wraplength=400,
-            ).pack(pady=SPACING["xs"], anchor=tk.W)
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
 
         # Listening Time Heatmap
         heatmap = self._stats.get_listening_time_heatmap()
@@ -549,7 +565,7 @@ class Dashboard(tk.Tk):
                 if heatmap[day_idx]:
                     hours = ", ".join([f"{h}:00={m}min" for h, m in sorted(heatmap[day_idx].items())])
                     heatmap_text += f"{day_names[day_idx]}: {hours}\n"
-            tk.Label(
+            lbl = tk.Label(
                 self._stats_content,
                 text=heatmap_text,
                 font=FONTS["status"],
@@ -557,7 +573,54 @@ class Dashboard(tk.Tk):
                 bg=COLORS["bg"],
                 justify=tk.LEFT,
                 wraplength=400,
-            ).pack(pady=SPACING["xs"], anchor=tk.W)
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Most Played Tracks
+        top_tracks = self._stats.get_top_tracks(20)
+        if top_tracks:
+            track_text = "\n".join(
+                [
+                    f"{t['artist']} - {t['album']}: {t['title']} ({t['play_count']} plays)"
+                    for t in top_tracks[:10]
+                ]
+            )
+            lbl = tk.Label(
+                self._stats_content,
+                text="Most Played Tracks\n" + track_text,
+                font=FONTS["status"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
+
+        # Recent History (last 20 plays)
+        recent_history = self._stats.get_recent_history(20)
+        if recent_history:
+            history_text = "\n".join(
+                [
+                    f"{h['ended_at'] or 'in progress'}: {h['artist']} - {h['album']} ({h['title']})"
+                    for h in recent_history[:20]
+                ]
+            )
+            lbl = tk.Label(
+                self._stats_content,
+                text="Recent History\n" + history_text,
+                font=FONTS["status"],
+                fg=COLORS["fg"],
+                bg=COLORS["bg"],
+                justify=tk.LEFT,
+                wraplength=400,
+            )
+            lbl.bind("<ButtonPress-1>", self._on_stats_drag_start)
+            lbl.bind("<B1-Motion>", self._on_stats_drag_move)
+            lbl.pack(pady=SPACING["xs"], anchor=tk.W)
 
         # Export CSV button
         def _export_csv():
@@ -702,7 +765,7 @@ class Dashboard(tk.Tk):
             self.status_label.set_state("unknown")
             return
 
-# Check for song change
+        # Check for song change
         song_file = song.get("file", "")
         previous_song = self._current_song
         previous_file = None if previous_song is None else previous_song.get("file", "")
