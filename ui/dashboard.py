@@ -472,11 +472,6 @@ class Dashboard(tk.Tk):
         self._stats_canvas.bind("<ButtonPress-1>", self._on_stats_drag_start)
         self._stats_canvas.bind("<B1-Motion>", self._on_stats_drag_move)
 
-        def _bind_label_drag(label):
-            """Bind drag handlers on a label so touch-drag works over text."""
-            label.bind("<ButtonPress-1>", self._on_stats_drag_start)
-            label.bind("<B1-Motion>", self._on_stats_drag_move)
-
         # Back button
         TouchButton(
             self._stats_frame,
@@ -583,7 +578,9 @@ class Dashboard(tk.Tk):
         if top_tracks:
             track_text = "\n".join(
                 [
-                    f"{t['artist']} - {t['album']}: {t['title']} ({t['play_count']} plays)"
+                    f"{t['artist'] or t['file'] or '(unknown)'} - "
+                    f"{t['album'] or '(unknown)'}: "
+                    f"{t['title'] or t['file'] or '(unknown)'} ({t['play_count']} plays)"
                     for t in top_tracks[:10]
                 ]
             )
@@ -605,7 +602,9 @@ class Dashboard(tk.Tk):
         if recent_history:
             history_text = "\n".join(
                 [
-                    f"{h['ended_at'] or 'in progress'}: {h['artist']} - {h['album']} ({h['title']})"
+                    f"{h['ended_at'] and time.strftime('%Y-%m-%d %H:%M', time.localtime(h['ended_at'])) or '(in progress)'}: "
+                    f"{h['artist'] or h['file'] or '(unknown)'} - "
+                    f"{h['album'] or '(unknown)'} ({h['title'] or h['file'] or '(unknown)'})"
                     for h in recent_history[:20]
                 ]
             )

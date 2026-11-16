@@ -705,22 +705,25 @@ class PlayStats:
         self._delete_old_plays()
 
     def _delete_old_plays(self) -> None:
-        """Delete completed plays older than retention_seconds.
+        """Delete plays (completed, skipped, or stopped) older than retention_seconds.
 
         Retention window is derived from stats.retention_days (default 365 days).
+        Logs the number of deleted rows only when something was actually deleted.
         """
         if not self.enabled:
             return
         try:
             cutoff = int(time.time()) - self._retention_seconds
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 DELETE FROM plays
-                WHERE completed = 1 AND ended_at < ?
+                WHERE ended_at < ?
                 """,
                 (cutoff,),
             )
-            logger.info("Deleted plays older than retention window", extra={"cutoff": cutoff})
+            deleted = cursor.rowcount if cursor.rowcount > 0 else 0
+            if deleted > 0:
+                logger.info("Deleted %d plays older than retention window", deleted)
         except Exception as e:
             logger.warning("_delete_old_plays failed: %s", e)
 
