@@ -348,15 +348,20 @@ class Slice22TestCase(unittest.TestCase):
 
         stats = PlayStats(db_path=db_path, enabled=True)
         try:
-            # Manually populate the heatmap cache
-            stats._listening_time_heatmap = {
-                0: {9: 60, 14: 120},  # Mon: 9am=1h, 2pm=2h
-                1: {8: 45},            # Tue: 8am=45m
-            }
+            # Build a definite local "Monday 09:00" timestamp.
+            # 2025-01-06 (a Monday) at 09:00 local time.
+            local_monday_9am = time.mktime((2025, 1, 6, 9, 0, 0, 0, 0, -1))
+            started = int(local_monday_9am)
+            # 60-minute completed play
+            stats._conn.execute(
+                "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ('mon.mp3', 'A', 'Al', 'Mon', started, started + 3600, 1, 0, 60 * 60 * 1000),
+            )
+            stats._conn.commit()
             hm = stats.get_listening_time_heatmap()
             check("Returns dict", isinstance(hm, dict))
             check("Has Monday data", 0 in hm)
-            check("Tuesday hour has data", 1 in hm and 8 in hm[1])
+            check("Monday 9am has minutes", 9 in hm[0])
             check("Monday 9am = 60 min", hm[0].get(9) == 60)
             stats.close()
 
@@ -406,6 +411,7 @@ class Slice22TestCase(unittest.TestCase):
             stats._conn.commit()
             stats.cleanup()
 
+            # After retention, old completed plays are deleted, recent completed kept
             remaining = [r[0] for r in
                          stats._conn.execute("SELECT track_path FROM plays").fetchall()]
             check("Old completed deleted", 'old_c.mp3' not in remaining)
@@ -458,7 +464,7 @@ class Slice22TestCase(unittest.TestCase):
             os.remove(db_path) if os.path.exists(db_path) else None
 
     def test_retention_keeps_open_plays_close_them(self):
-        """Retention closes open plays without deleting them."""
+        """Retention closes old open plays without deleting recent ones."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
@@ -468,19 +474,32 @@ class Slice22TestCase(unittest.TestCase):
             stats._retention_seconds = 10
             now = int(time.time())
 
-            # Open play (ended_at is NULL)
+            # Old open play (started 50s ago, past the 10s retention) -> closed AND deleted
             stats._conn.execute(
                 "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
-                ('open.mp3', 'A', 'Al', 'T', now - 50, None, 0, 0, 50000),
+                ('old_open.mp3', 'A', 'Al', 'T', now - 50, None, 0, 0, 50000),
+            )
+            # Recent open play (started 5s ago, within retention) -> stays open
+            stats._conn.execute(
+                "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ('new_open.mp3', 'B', 'Bl', 'T', now - 5, None, 0, 0, 30000),
             )
             stats._conn.commit()
             stats.cleanup()
 
-            row = stats._conn.execute(
-                "SELECT ended_at, completed FROM plays WHERE track_path = ?",
-                ('open.mp3',)
+            # Old open play is closed and then deleted as past retention
+            old_row = stats._conn.execute(
+                "SELECT ended_at FROM plays WHERE track_path = ?",
+                ('old_open.mp3',)
             ).fetchone()
-            check("Open play closed (ended_at set)", row is not None and row[0] is not None)
+            check("Old open play deleted after cleanup", old_row is None)
+
+            # Recent open play stays open (ended_at still NULL)
+            new_row = stats._conn.execute(
+                "SELECT ended_at FROM plays WHERE track_path = ?",
+                ('new_open.mp3',)
+            ).fetchone()
+            check("Recent open play stays open", new_row is not None and new_row[0] is None)
             stats.close()
 
         finally:

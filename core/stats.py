@@ -521,6 +521,8 @@ class PlayStats:
     def get_top_tracks(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Get top tracks by play count (completed plays only).
 
+        Groups by track_path only (same file = same track, even if tags differ).
+
         Args:
             limit: Maximum number of tracks to return (default: 20).
 
@@ -532,12 +534,16 @@ class PlayStats:
         try:
             cursor = self._conn.execute(
                 """
-                SELECT track_path, artist, album, title, COUNT(*) as play_count,
+                SELECT track_path,
+                       MAX(artist) as artist,
+                       MAX(album) as album,
+                       MAX(title) as title,
+                       COUNT(*) as play_count,
                        SUM(duration_ms) as total_duration_ms,
                        MAX(ended_at) as last_played
                 FROM plays
                 WHERE completed = 1 AND track_path IS NOT NULL AND track_path != ''
-                GROUP BY track_path, artist, album, title
+                GROUP BY track_path
                 ORDER BY play_count DESC
                 LIMIT ?
                 """,
