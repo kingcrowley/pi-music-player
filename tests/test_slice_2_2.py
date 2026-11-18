@@ -896,7 +896,66 @@ class Slice22TestCase(unittest.TestCase):
         self.assertIsNotNone(rows[0]["ended_at"], "Row should be closed")
         self.assertFalse(rows[0]["completed"], "Stop while paused should mark completed=False")
         self.assertFalse(rows[0]["skipped"], "Stop while paused should mark skipped=False (stopped, not skipped)")
-        stats.close()
+
+    def test_update_ui_quitting_mid_track_closes_row(self):
+        """Quitting while a play is in progress should close the row in the DB."""
+        self._dash = self._make_dashboard(stats_enabled=True)
+        # Open a row via a playing poll
+        self._open_row(elapsed=50.0)
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
+        # Capture row state before quitting
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
+        self.assertIsNone(rows[0]["ended_at"], "Row should be open before quitting")
+        # Simulate quitting mid-track: call _on_close directly
+        try:
+            self._dash._on_close()
+        except Exception:
+            pass
+        # The row should have been closed via record_play_end(completed=False)
+        # Verify via the DB one more time (connection may be closed by _on_close,
+        # so open a fresh connection).
+        try:
+            cur = self._dash._stats._conn.execute(
+                "SELECT ended_at, completed FROM plays ORDER BY id ASC"
+            )
+        except Exception:
+            # Connection may be closed by _on_close(); open a fresh one instead
+            import sqlite3
+            conn = sqlite3.connect(self._dash._stats.db_path)
+            cur = conn.execute(
+                "SELECT ended_at, completed FROM plays ORDER BY id ASC"
+            )
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
+        self.assertIsNotNone(rows[0][0], "Quitting mid-track should close the row")
+        self.assertFalse(bool(rows[0][1]), "Quitting mid-track should mark completed=False")
+
+    def test_update_ui_cleanup_not_called_on_idle_polls(self):
+        """cleanup() should NOT run on idle polls (only after finalizing a row)."""
+        self._dash = self._make_dashboard(stats_enabled=True)
+        # Mock _maybe_cleanup to track calls
+        cleanup_called = [False]
+        original_maybe_cleanup = self._dash._maybe_cleanup
+        def tracked_maybe_cleanup():
+            cleanup_called[0] = True
+            original_maybe_cleanup()
+        self._dash._maybe_cleanup = tracked_maybe_cleanup
+        # Do 10 idle polls (playing, same song, elapsed advances)
+        for elapsed in [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0]:
+            self._drive_update_ui(
+                {"state": "play", "elapsed": elapsed, "duration": 300.0, "volume": "50"},
+                {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
+            )
+        self.assertFalse(cleanup_called[0],
+                         "cleanup() should not run on idle polls (only after finalizing a row)")
+        # Simulate finalizing a row (stop)
+        self._drive_update_ui(
+            {"state": "stop", "elapsed": 19.0, "duration": 300.0, "volume": "50"},
+            {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
+        )
+        self.assertTrue(cleanup_called[0],
+                        "cleanup() should run after finalizing a row (stop)")
 
 
 def run_all_tests():
