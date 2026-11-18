@@ -410,9 +410,10 @@ class Slice22TestCase(unittest.TestCase):
             stats._conn.commit()
             stats.cleanup()
 
+            # After retention cleanup, old completed plays are kept (no longer deleted by age)
             remaining = [r[0] for r in
                          stats._conn.execute("SELECT track_path FROM plays").fetchall()]
-            check("Old completed deleted", 'old_c.mp3' not in remaining)
+            check("Old completed kept (no longer deleted by age)", 'old_c.mp3' in remaining)
             check("Recent completed kept", 'new_c.mp3' in remaining)
             stats.close()
 
@@ -450,10 +451,11 @@ class Slice22TestCase(unittest.TestCase):
             stats._conn.commit()
             stats.cleanup()
 
+            # After retention cleanup, old skipped and stopped plays are kept (no longer deleted by age)
             remaining = [r[0] for r in
                          stats._conn.execute("SELECT track_path FROM plays").fetchall()]
-            check("Old skipped deleted", 'old_s.mp3' not in remaining)
-            check("Old stopped deleted", 'old_t.mp3' not in remaining)
+            check("Old skipped kept (no longer deleted by age)", 'old_s.mp3' in remaining)
+            check("Old stopped kept (no longer deleted by age)", 'old_t.mp3' in remaining)
             check("Recent completed kept", 'new_c.mp3' in remaining)
             stats.close()
 
@@ -485,12 +487,12 @@ class Slice22TestCase(unittest.TestCase):
             stats._conn.commit()
             stats.cleanup()
 
-            # Old open play is closed and then deleted as past retention
+            # Old open play is closed (ended_at set) and kept in DB
             old_row = stats._conn.execute(
                 "SELECT ended_at FROM plays WHERE track_path = ?",
                 ('old_open.mp3',)
             ).fetchone()
-            check("Old open play deleted after cleanup", old_row is None)
+            check("Old open play closed (ended_at set)", old_row is not None and old_row[0] is not None)
 
             # Recent open play stays open (ended_at still NULL)
             new_row = stats._conn.execute(
@@ -571,7 +573,12 @@ class Slice22TestCase(unittest.TestCase):
     # --- integration: retention + top_tracks ---
 
     def test_retention_and_top_tracks_integration(self):
-        """After retention cleanup, get_top_tracks reflects only surviving plays."""
+        """After retention cleanup, get_top_tracks still reflects all completed plays.
+
+        Retention no longer deletes completed plays by age — it only closes
+        open rows and prunes when the size limit is exceeded. So both old and
+        recent completed plays should appear in the top tracks.
+        """
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
@@ -599,8 +606,10 @@ class Slice22TestCase(unittest.TestCase):
             top = stats.get_top_tracks(limit=5)
             check("Recent track appears in top",
                   any(t.get("title") == "RecentTrack" for t in top))
-            check("Old track gone after cleanup",
-                  not any(t.get("title") == "OldTrack" for t in top))
+            check("Old track still in top after cleanup (not age-deleted)",
+                  any(t.get("title") == "OldTrack" for t in top))
+            check("Old track grouped as 2 plays",
+                  any(t.get("play_count") == 2 for t in top))
             stats.close()
 
         finally:

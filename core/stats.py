@@ -720,14 +720,14 @@ class PlayStats:
     def cleanup(self) -> None:
         """Run cleanup: close old open plays and enforce max size.
 
-        Also deletes plays older than the retention window so the database
-        doesn't grow unbounded over time.
+        Close open plays (unfinished) older than retention_days so they don't
+        stay open forever. Then prune oldest completed, skipped, and stopped
+        plays if the database exceeds max_size_mb to keep the file size bounded.
         """
         if not self.enabled:
             return
         self._cleanup_open_plays()
         self._enforce_max_size()
-        self._delete_old_plays()
 
     def _delete_old_plays(self) -> None:
         """Delete plays (completed, skipped, or stopped) older than retention_seconds.
