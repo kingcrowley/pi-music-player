@@ -640,7 +640,6 @@ class PlayStats:
                 SELECT id, track_path, artist, album, title,
                        started_at, ended_at, completed, skipped, duration_ms
                 FROM plays
-                WHERE completed = 1
                 ORDER BY id ASC
                 """
             )
@@ -787,6 +786,8 @@ class PlayStats:
                 config_owner.set("stats.reset", False)
                 saved = config_owner.save()
                 if not saved:
+                    # The flag is already True in memory; leave it True so the
+                    # next save (or next launch) still triggers the reset.
                     logger.warning(
                         "Failed to persist stats.reset=false; skipping reset"
                     )
@@ -798,7 +799,14 @@ class PlayStats:
                             "stats reset failed; restoring reset request for next launch"
                         )
                         config_owner.set("stats.reset", True)
-                        config_owner.save()
+                        try:
+                            config_owner.save()
+                        except Exception as e:
+                            # Even the restore write failed; leave the in-memory
+                            # flag True so a later save still persists the reset.
+                            logger.warning(
+                                "Failed to restore stats.reset=true for retry: %s", e
+                            )
 
         return instance
 

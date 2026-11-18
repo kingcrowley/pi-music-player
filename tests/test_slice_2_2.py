@@ -561,6 +561,45 @@ class Slice22TestCase(unittest.TestCase):
             stats.close()
             os.remove(db_path) if os.path.exists(db_path) else None
 
+    def test_export_csv_includes_all_outcomes(self):
+        """export_csv exports completed, skipped and stopped plays (all outcomes)."""
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        db_path = os.path.join(tmpdir, "test.db")
+
+        stats = PlayStats(db_path=db_path, enabled=True)
+        try:
+            now = int(time.time())
+            stats._conn.execute(
+                "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ('completed.mp3', 'A', 'Al', 'Completed', now - 30, now, 1, 0, 30000),
+            )
+            stats._conn.execute(
+                "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ('skipped.mp3', 'B', 'Bl', 'Skipped', now - 60, now - 50, 0, 1, 20000),
+            )
+            stats._conn.execute(
+                "INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ('stopped.mp3', 'C', 'Cl', 'Stopped', now - 90, now - 80, 0, 0, 30000),
+            )
+            stats._conn.commit()
+            path = stats.export_csv()
+            check("Returns path", path is not None and isinstance(path, str))
+            if path and os.path.exists(path):
+                with open(path) as f:
+                    header = f.readline().strip()
+                    rows = [line.strip() for line in f if line.strip()]
+                check("CSV has header", "id" in header)
+                check("Has 3 data rows (all outcomes)", len(rows) == 3)
+                check("Completed play exported", any('completed.mp3' in r for r in rows))
+                check("Skipped play exported", any('skipped.mp3' in r for r in rows))
+                check("Stopped play exported", any('stopped.mp3' in r for r in rows))
+            stats.close()
+
+        finally:
+            stats.close()
+            os.remove(db_path) if os.path.exists(db_path) else None
+
     # --- integration: retention + top_tracks ---
 
     def test_retention_and_top_tracks_integration(self):
