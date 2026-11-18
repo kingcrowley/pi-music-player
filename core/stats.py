@@ -729,7 +729,6 @@ class PlayStats:
         self._cleanup_open_plays()
         self._enforce_max_size()
 
-    
     def close(self) -> None:
         """Close the SQLite connection and perform WAL checkpoint.
 
