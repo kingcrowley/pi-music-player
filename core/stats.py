@@ -522,6 +522,7 @@ class PlayStats:
         """Get top tracks by play count (completed plays only).
 
         Groups by track_path only (same file = same track, even if tags differ).
+        Tags come from the latest play of each track.
 
         Args:
             limit: Maximum number of tracks to return (default: 20).
@@ -534,17 +535,35 @@ class PlayStats:
         try:
             cursor = self._conn.execute(
                 """
-                SELECT track_path,
-                       MAX(artist) as artist,
-                       MAX(album) as album,
-                       MAX(title) as title,
-                       COUNT(*) as play_count,
-                       SUM(duration_ms) as total_duration_ms,
-                       MAX(ended_at) as last_played
-                FROM plays
-                WHERE completed = 1 AND track_path IS NOT NULL AND track_path != ''
-                GROUP BY track_path
-                ORDER BY play_count DESC
+                WITH agg AS (
+                    SELECT track_path,
+                           COUNT(*) AS play_count,
+                           SUM(duration_ms) AS total_duration_ms,
+                           MAX(ended_at) AS last_played
+                    FROM plays
+                    WHERE completed = 1
+                      AND track_path IS NOT NULL
+                      AND track_path != ''
+                    GROUP BY track_path
+                ),
+                latest AS (
+                    SELECT track_path, artist, album, title,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY track_path
+                               ORDER BY ended_at DESC, id DESC
+                           ) AS rn
+                    FROM plays
+                    WHERE completed = 1
+                      AND track_path IS NOT NULL
+                      AND track_path != ''
+                )
+                SELECT agg.track_path, latest.artist, latest.album,
+                       latest.title, agg.play_count,
+                       agg.total_duration_ms, agg.last_played
+                FROM agg
+                JOIN latest ON latest.track_path = agg.track_path
+                           AND latest.rn = 1
+                ORDER BY agg.play_count DESC, agg.last_played DESC
                 LIMIT ?
                 """,
                 (limit,),
