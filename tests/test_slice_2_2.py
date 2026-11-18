@@ -27,8 +27,26 @@ from ui.dashboard import Dashboard
 RESULTS = []
 
 
+class _CheckFailure(Exception):
+    """Internal exception to signal a failed check."""
+
+
 def check(name: str, condition: bool, detail: str = ""):
-    """Record a test result."""
+    """Record a test result; raise immediately if the check fails.
+
+    Previously this helper only printed PASS/FAIL, so the custom checks could
+    report failure while the test runner still saw an OK suite. Failing loudly
+    keeps the test suite green only when every check genuinely holds.
+    """
+    status = "PASS" if condition else "FAIL"
+    mark = "PASS" if condition else "FAIL"
+    RESULTS.append((status, name))
+    if not condition:
+        raise _CheckFailure(f"CHECK FAILED: {name}" + (f" - {detail}" if detail else ""))
+
+
+def check_safe(name: str, condition: bool, detail: str = ""):
+    """Record a check result without raising (best-effort, still records)."""
     status = "PASS" if condition else "FAIL"
     mark = "PASS" if condition else "FAIL"
     RESULTS.append((status, name))
@@ -652,10 +670,8 @@ class Slice22TestCase(unittest.TestCase):
     def test_update_ui_unknown_status_keeps_row_open(self):
         """Unknown status poll does not close an active play row."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        # Start a play row first (use the dashboard's stats)
-        stats = self._dash._stats
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 300})
-        self.assertTrue(result)
+        self._open_row()
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
         # Now send unknown status
         self._drive_update_ui({"state": "unknown", "elapsed": 0.0, "duration": 0.0, "volume": "50"},
                               {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"})
@@ -663,45 +679,45 @@ class Slice22TestCase(unittest.TestCase):
         row_active = self._dash._play_row_active
         prev_state = self._dash._prev_state
         self.assertTrue(row_active, "Unknown status should keep row open")
-        self.assertEqual(prev_state, "unknown")
+        self.assertEqual(prev_state, "playing",
+                         "_prev_state should keep the last valid state")
 
     def test_update_ui_empty_song_playing_keeps_row_open(self):
         """Empty song reply while playing does not finalize/close the row."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 300})
-        self.assertTrue(result)
+        self._open_row()
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
+        current_song = self._dash._current_song
+        self.assertIsNotNone(current_song, "current_song should be set after first poll")
         # Send empty song while playing — should return early, keep row
         self._drive_update_ui({"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"},
                               {})
         row_active = self._dash._play_row_active
-        current_song = self._dash._current_song
+        current_song2 = self._dash._current_song
         self.assertTrue(row_active, "Empty song while playing should keep row open")
-        self.assertIsNotNone(current_song, "current_song should be preserved")
+        self.assertEqual(current_song, current_song2, "current_song should be preserved")
 
     def test_update_ui_stopped_finalizes_as_stopped(self):
         """Stopped transition with same song finalizes row as stopped (skipped=False)."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 300})
-        self.assertTrue(result)
-        # Send stopped status
-        self._drive_update_ui({"state": "stop", "elapsed": 0.0, "duration": 0.0, "volume": "50"},
-                              {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"})
-        # Row should have been finalized
+        self._open_row()
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
+        # Send stopped status (same song/id) → stopped_transition
+        self._drive_update_ui(
+            {"state": "stop", "elapsed": 10.0, "duration": 300.0, "volume": "50"},
+            {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
+        )
         self.assertFalse(self._dash._play_row_active, "Row should be finalized after stopped transition")
-        # Check DB: last row should be completed=0, ended_at set
-        rows = stats.get_recent_plays(limit=5)
-        self.assertTrue(len(rows) > 0, "At least one play in DB")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
         last = rows[0]
-        # A stopped transition should mark it completed=False, skipped=False
-        self.assertEqual(last.get("completed"), False, "stopped finalize should set completed=False")
-        self.assertEqual(last.get("skipped"), False, "stopped finalize should set skipped=False")
+        self.assertIsNotNone(last["ended_at"], "Row should be closed")
+        self.assertFalse(last["completed"], "stopped finalize should set completed=False")
+        self.assertFalse(last["skipped"], "stopped finalize should set skipped=False")
 
     def test_update_ui_repeat_one_restarts(self):
         """Same queue entry, elapsed drops from 200→20: repeat-one detected, restart."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
         # First poll: playing with high elapsed (200s) → opens row
         status1 = {"state": "play", "elapsed": 200.0, "duration": 300.0, "volume": "50"}
         song1 = {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"}
@@ -711,13 +727,14 @@ class Slice22TestCase(unittest.TestCase):
         status2 = {"state": "play", "elapsed": 20.0, "duration": 300.0, "volume": "50"}
         song2 = {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"}
         self._drive_update_ui(status2, song2)
-        # _playback_restarted should be True after the second poll
-        self.assertTrue(self._dash._playback_restarted, "Repeat-one should be detected when elapsed drops >50%")
-        # Old row finalized, new row opened → row active again
+        # _playback_restarted is consumed by the open-row path, so assert on effects:
+        # old row finalized (skipped) + new row opened
         self.assertTrue(self._dash._play_row_active, "New row should be opened after repeat-one restart")
-        # DB should have at least one completed play (the old row finalized)
-        rows = stats.get_recent_plays(limit=5)
-        self.assertTrue(len(rows) > 0, "Should have a finalized play in DB")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 2, "Old row finalized + new row opened")
+        self.assertIsNotNone(rows[0]["ended_at"], "Old row should be closed")
+        self.assertTrue(rows[0]["skipped"], "Repeat-one finalize should mark old row skipped")
+        self.assertIsNone(rows[1]["ended_at"], "New row should be open")
 
     def test_update_ui_seek_pending_suppresses_restart(self):
         """Seek pending before poll should suppress repeat-one detection."""
@@ -743,24 +760,23 @@ class Slice22TestCase(unittest.TestCase):
     def test_update_ui_track_change_finalizes_old_opens_new(self):
         """Track change (song_changed=True) finalizes old row and opens new row."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        # First poll - Song A starts
-        status_a = {"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"}
-        song_a = {"file": "a.mp3", "id": "1", "title": "Track A", "artist": "A", "album": "Al"}
-        self._drive_update_ui(status_a, song_a)
+        self._open_row(file="a.mp3", song_id="1", elapsed=10.0)
         self.assertTrue(self._dash._play_row_active, "Song A should open a row")
-        # Then poll: Song B starts (song_changed=True, different file/id)
-        status_b = {"state": "play", "elapsed": 0.0, "duration": 300.0, "volume": "50"}
-        song_b = {"file": "b.mp3", "id": "2", "title": "Track B", "artist": "B", "album": "Bl"}
-        self._drive_update_ui(status_b, song_b)
-        # Old row (Song A) should be finalized, new row (Song B) opened
+        # Song B starts (different file/id) → song_changed
+        self._drive_update_ui(
+            {"state": "play", "elapsed": 0.0, "duration": 300.0, "volume": "50"},
+            {"file": "b.mp3", "id": "2", "title": "Track B", "artist": "B", "album": "Bl"},
+        )
         self.assertTrue(self._dash._play_row_active, "New row for Song B should be opened")
-        # Verify DB has a play for Track A (completed=False at 10s elapsed of 300s)
-        rows = stats.get_recent_plays(limit=5)
-        self.assertTrue(len(rows) > 0, "Should have a finalized play for Track A")
-        last = rows[0]
-        self.assertFalse(last.get("completed"), "Track A at 10/300 should not be completed")
-        self.assertTrue(last.get("skipped"), "Track A should be skipped (not completed)")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 2, "Song A finalized + Song B opened")
+        a_row = rows[0]
+        self.assertEqual(a_row["file"], "a.mp3")
+        self.assertIsNotNone(a_row["ended_at"], "Song A row should be closed")
+        self.assertFalse(a_row["completed"], "Track A at 10/300 should not be completed")
+        self.assertTrue(a_row["skipped"], "Track A should be skipped (not completed)")
+        self.assertEqual(rows[1]["file"], "b.mp3")
+        self.assertIsNone(rows[1]["ended_at"], "Song B row should be open")
 
     def test_update_ui_transition_into_play_opens_row(self):
         """Stopped → Playing (transition_into_play) opens a new row via record_play_start."""
@@ -794,60 +810,58 @@ class Slice22TestCase(unittest.TestCase):
     def test_update_ui_empty_song_stopped_finalizes_row(self):
         """Empty song reply + state=stop with active row finalizes row by threshold."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        # Start a play row first
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 300})
-        self.assertTrue(result)
-        # Now send empty song with state=stop and elapsed=270s (90% of 300)
-        self._drive_update_ui({"state": "stop", "elapsed": 270.0, "duration": 300.0, "volume": "50"},
-                              {})
-        # Row should have been finalized: threshold = 270, elapsed=270 >= 270 → completed=True
+        self._open_row(elapsed=270.0, duration=300.0)
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
+        # Empty song + stopped → finalize using previous elapsed/duration
+        self._drive_update_ui(
+            {"state": "stop", "elapsed": 270.0, "duration": 300.0, "volume": "50"}, {}
+        )
         self.assertFalse(self._dash._play_row_active, "Row should be finalized after empty+stop")
-        # Check completed flag
-        rows = stats.get_recent_plays(limit=5)
-        self.assertTrue(len(rows) > 0, "Should have a play in DB")
+        self.assertIsNone(self._dash._current_song, "current_song should be cleared on finalize")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
         last = rows[0]
-        # With completed=True and skipped=False, and elapsed=270 >= threshold=270
-        self.assertTrue(last.get("completed"), "completed should be True when elapsed >= threshold (270/300)")
+        self.assertIsNotNone(last["ended_at"], "Row should be closed")
+        self.assertTrue(last["completed"],
+                        "completed should be True when prev_elapsed >= threshold (270/300)")
 
     def test_update_ui_disabled_stats_no_row_open(self):
         """stats.enabled=False should not open/close rows."""
         self._dash = self._make_dashboard(stats_enabled=False)
-        # Sending any status should not affect _play_row_active
-        status = {"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"}
-        song = {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"}
-        self._drive_update_ui(status, song)
+        self.assertFalse(self._dash._stats.enabled, "stats should be disabled")
+        # Sending playing poll should not open a row
+        self._drive_update_ui(
+            {"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"},
+            {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
+        )
         self.assertFalse(self._dash._play_row_active, "Disabled stats should not open rows")
 
     def test_update_ui_short_track_completion(self):
         """3s track with 2.5s elapsed: threshold=1.0, elapsed>=1.0 → completed=True."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 3})
-        self.assertTrue(result)
-        # Send stopped status with 2.5s elapsed on a 3s track
-        # _completion_threshold(3.0) = max(1.0, min(2.7, 1.0)) = max(1.0, 1.0) = 1.0
-        # elapsed=2.5 >= 1.0 → completed=True
+        self._open_row(elapsed=2.5, duration=3.0)
+        self.assertTrue(self._dash._play_row_active, "Playing poll should open a row")
+        # Stop: threshold(3.0) = 1.0, prev_elapsed 2.5 >= 1.0 → completed
         self._drive_update_ui({"state": "stop", "elapsed": 2.5, "duration": 3.0, "volume": "50"},
                               {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"})
         self.assertFalse(self._dash._play_row_active, "Row should be finalized")
-        rows = stats.get_recent_plays(limit=5)
-        self.assertTrue(len(rows) > 0, "Should have a play in DB")
-        last = rows[0]
-        self.assertTrue(last.get("completed"), "short track at 2.5/3.0 should be completed")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
+        self.assertTrue(rows[0]["completed"], "short track at 2.5/3.0 should be completed")
 
     def test_update_ui_zero_duration_never_complete(self):
         """duration=0 → _completion_threshold(0)=inf → never auto-completes."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        stats = self._dash._stats
-        result = stats.record_play_start({'file': 'a.mp3', 'artist': 'A', 'album': 'Al', 'title': 'T', 'duration': 0})
-        self.assertTrue(result)
-        # Send stopped status with any elapsed: threshold should be inf
+        self._open_row(elapsed=100.0, duration=0.0)
+        self.assertTrue(self._dash._play_row_active, "Playing poll should still open a row")
+        # Stopped transition: threshold(0)=inf → 100 >= inf is False → completed=False
         self._drive_update_ui({"state": "stop", "elapsed": 100.0, "duration": 0.0, "volume": "50"},
                               {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"})
-        # Row should still be active since threshold=inf → 100 >= inf is False
-        self.assertTrue(self._dash._play_row_active, "Zero-duration track should never auto-complete")
-        stats.close()
+        # Row should still be finalized on stop
+        self.assertFalse(self._dash._play_row_active, "Row should be finalized on stop")
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "Exactly one row expected")
+        self.assertFalse(rows[0]["completed"], "zero-duration track must never be completed")
 
     def test_update_ui_stop_while_paused_stored_as_stopped(self):
         """Stop while paused should finalize as stopped, not skipped."""
