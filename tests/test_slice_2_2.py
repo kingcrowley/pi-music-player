@@ -13,7 +13,6 @@ import time
 import tempfile
 import shutil
 import unittest
-import importlib
 import logging
 import tkinter as tk
 from unittest.mock import Mock, MagicMock, patch
@@ -679,6 +678,10 @@ class Slice22TestCase(unittest.TestCase):
         # Unknown status should NOT finalize the row or clear it
         row_active = self._dash._play_row_active
         prev_state = self._dash._prev_state
+        # Database check: the row should still be open (ended_at NULL)
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "No extra row should be created")
+        self.assertIsNone(rows[0]["ended_at"], "Unknown status should not close the row")
         self.assertTrue(row_active, "Unknown status should keep row open")
         self.assertEqual(prev_state, "playing",
                          "_prev_state should keep the last valid state")
@@ -697,6 +700,10 @@ class Slice22TestCase(unittest.TestCase):
         current_song2 = self._dash._current_song
         self.assertTrue(row_active, "Empty song while playing should keep row open")
         self.assertEqual(current_song, current_song2, "current_song should be preserved")
+        # Database check: the active row should still be open (ended_at NULL)
+        rows = self._all_rows(self._dash._stats)
+        self.assertEqual(len(rows), 1, "No extra row should be created")
+        self.assertIsNone(rows[0]["ended_at"], "Empty song while playing should not close the row")
 
     def test_update_ui_stopped_finalizes_as_stopped(self):
         """Stopped transition with same song finalizes row as stopped (skipped=False)."""

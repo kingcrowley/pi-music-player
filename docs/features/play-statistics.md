@@ -236,6 +236,6 @@ LISTENING PEAKS:
 | Issue | Solution |
 |-------|----------|
 | Database locked | Close other app instances; only one should access at a time |
-| Stats not recording | Check `stats_enabled` in config.json |
-| Database too large | Increase `stats.max_size_mb` (the key is `stats.max_size_mb`, not `stats_max_size_mb`). `stats.retention_days` only closes unfinished plays — it does not shrink the database |
+| Stats not recording | Check `stats.enabled` in config.json |
+| Database too large | Reduce `stats.max_size_mb` — the size limit is what trims the oldest plays, so a lower cap keeps the file smaller. (The real key is `stats.max_size_mb`, not `stats_max_size_mb`.) `stats.retention_days` only closes unfinished plays; it does not shrink the database |
 | Wrong track attributed | Ensure MPD `currentsong()` returns correct metadata |
