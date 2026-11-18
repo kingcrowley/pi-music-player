@@ -80,7 +80,7 @@ From Discover screen:
 
 - **Action:** Shows artists in your library that you've never played
 - **When to use:** "What else does my collection have?"
-- **Requires:** MPD database up-to-date (`mpc update` after adding new music)
+- **Requires:** MPD database up-to-date (`mpc update --wait` after adding new music)
 
 ---
 
@@ -284,5 +284,5 @@ print('Genre Radio:', engine.get_genre_radio('Blues')[:5])
 |-------|----------|
 | No recommendations | Build model: check play history exists, run `build_from_history()` |
 | All artists "similar" | Low play count; need more listening sessions |
-| Genre radio empty | MPD database outdated; run `mpc update` |
+| Genre radio empty | MPD database outdated; run `mpc update --wait` |
 | Slow queries | Check SQLite indices, consider vacuum |

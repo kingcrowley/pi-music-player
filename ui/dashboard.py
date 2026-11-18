@@ -480,13 +480,27 @@ class Dashboard(tk.Tk):
             command=self._toggle_stats,
         ).pack(side=tk.BOTTOM, pady=SPACING["sm"])
 
+    def _canvas_coords(self, event):
+        """Convert an event's coords to canvas coordinates.
+
+        event.x/event.y are relative to whichever widget received the event.
+        A drag that starts on a Label reports label-local coordinates, which
+        are meaningless to the canvas. Translate via root coordinates so the
+        drag works the same whether it starts on the canvas or any child.
+        """
+        root_x = event.x_root - self._stats_canvas.winfo_rootx()
+        root_y = event.y_root - self._stats_canvas.winfo_rooty()
+        return root_x, root_y
+
     def _on_stats_drag_start(self, event):
         """Start a drag scroll on the stats canvas."""
-        self._stats_canvas.scan_mark(event.x, event.y)
+        x, y = self._canvas_coords(event)
+        self._stats_canvas.scan_mark(x, y)
 
     def _on_stats_drag_move(self, event):
         """Drag-scroll the stats canvas while tracking the cursor."""
-        self._stats_canvas.scan_dragto(event.x, event.y, gain=1)
+        x, y = self._canvas_coords(event)
+        self._stats_canvas.scan_dragto(x, y, gain=1)
 
     def _refresh_stats_content(self) -> None:
         """Refresh stats content with latest data."""

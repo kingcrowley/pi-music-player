@@ -173,7 +173,8 @@ mpc ping
 mpc status
 
 # Add test music (use relative path from music_directory)
-mpc update
+# Use --wait to block until the database update finishes, then add the track.
+mpc update --wait
 mpc add artist/album/track.flac
 mpc play
 ```
