@@ -45,14 +45,6 @@ def check(name: str, condition: bool, detail: str = ""):
         raise _CheckFailure(f"CHECK FAILED: {name}" + (f" - {detail}" if detail else ""))
 
 
-def check_safe(name: str, condition: bool, detail: str = ""):
-    """Record a check result without raising (best-effort, still records)."""
-    status = "PASS" if condition else "FAIL"
-    mark = "PASS" if condition else "FAIL"
-    RESULTS.append((status, name))
-    print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
-
-
 # A minimal mock MusicPlayer that returns controlled data for _update_ui tests.
 class MockMusicPlayer:
     """Minimal mock of MusicPlayer for dashboard _update_ui tests.
@@ -385,8 +377,8 @@ class Slice22TestCase(unittest.TestCase):
 
     # --- retention ---
 
-    def test_retention_deletes_completed(self):
-        """Retention deletes completed plays older than the window."""
+    def test_retention_keeps_completed(self):
+        """Retention keeps completed plays older than the window (only deletes by size)."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
@@ -421,8 +413,8 @@ class Slice22TestCase(unittest.TestCase):
             stats.close()
             os.remove(db_path) if os.path.exists(db_path) else None
 
-    def test_retention_deletes_skipped_and_stopped(self):
-        """Retention also deletes skipped and stopped plays older than the window."""
+    def test_retention_keeps_skipped_and_stopped(self):
+        """Retention keeps skipped and stopped plays older than the window (only deletes by size)."""
         tmpdir = tempfile.mkdtemp()
         self.tmpdirs.append(tmpdir)
         db_path = os.path.join(tmpdir, "test.db")
@@ -609,7 +601,7 @@ class Slice22TestCase(unittest.TestCase):
             check("Old track still in top after cleanup (not age-deleted)",
                   any(t.get("title") == "OldTrack" for t in top))
             check("Old track grouped as 2 plays",
-                  any(t.get("play_count") == 2 for t in top))
+                  any(t.get("file") == "old.mp3" and t.get("play_count") == 2 for t in top))
             stats.close()
 
         finally:

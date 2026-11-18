@@ -729,29 +729,7 @@ class PlayStats:
         self._cleanup_open_plays()
         self._enforce_max_size()
 
-    def _delete_old_plays(self) -> None:
-        """Delete plays (completed, skipped, or stopped) older than retention_seconds.
-
-        Retention window is derived from stats.retention_days (default 365 days).
-        Logs the number of deleted rows only when something was actually deleted.
-        """
-        if not self.enabled:
-            return
-        try:
-            cutoff = int(time.time()) - self._retention_seconds
-            cursor = self._conn.execute(
-                """
-                DELETE FROM plays
-                WHERE ended_at < ?
-                """,
-                (cutoff,),
-            )
-            deleted = cursor.rowcount if cursor.rowcount > 0 else 0
-            if deleted > 0:
-                logger.info("Deleted %d plays older than retention window", deleted)
-        except Exception as e:
-            logger.warning("_delete_old_plays failed: %s", e)
-
+    
     def close(self) -> None:
         """Close the SQLite connection and perform WAL checkpoint.
 
