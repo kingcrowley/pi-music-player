@@ -951,21 +951,17 @@ class Slice22TestCase(unittest.TestCase):
             self._dash._on_close()
         except Exception:
             pass
-        # The row should have been closed via record_play_end(completed=False)
-        # Verify via the DB one more time (connection may be closed by _on_close,
-        # so open a fresh connection).
+        # The row should have been closed via record_play_end(completed=False).
+        # The Dashboard closed its own connection on _on_close, so open a fresh
+        # connection to read the final row state.
+        import sqlite3
+        conn = sqlite3.connect(self._dash._stats.db_path)
         try:
-            cur = self._dash._stats._conn.execute(
+            rows = conn.execute(
                 "SELECT ended_at, completed FROM plays ORDER BY id ASC"
-            )
-        except Exception:
-            # Connection may be closed by _on_close(); open a fresh one instead
-            import sqlite3
-            conn = sqlite3.connect(self._dash._stats.db_path)
-            cur = conn.execute(
-                "SELECT ended_at, completed FROM plays ORDER BY id ASC"
-            )
-        rows = cur.fetchall()
+            ).fetchall()
+        finally:
+            conn.close()
         self.assertEqual(len(rows), 1, "Exactly one row expected")
         self.assertIsNotNone(rows[0][0], "Quitting mid-track should close the row")
         self.assertFalse(bool(rows[0][1]), "Quitting mid-track should mark completed=False")
@@ -980,17 +976,20 @@ class Slice22TestCase(unittest.TestCase):
             cleanup_called[0] = True
             original_maybe_cleanup()
         self._dash._maybe_cleanup = tracked_maybe_cleanup
-        # Do 10 idle polls (playing, same song, elapsed advances)
-        for elapsed in [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0]:
+        # Do 10 idle polls: stopped state with an empty song (nothing playing).
+        # These must not trigger cleanup; the old playing-poll version never
+        # reached the idle code path and so could not catch the bug.
+        for _ in range(10):
             self._drive_update_ui(
-                {"state": "play", "elapsed": elapsed, "duration": 300.0, "volume": "50"},
-                {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
+                {"state": "stop", "elapsed": 0.0, "duration": 0.0, "volume": "50"},
+                {},
             )
         self.assertFalse(cleanup_called[0],
                          "cleanup() should not run on idle polls (only after finalizing a row)")
-        # Simulate finalizing a row (stop)
+        # Now open a row and finalize it (stop) → cleanup should run once
+        self._open_row(elapsed=10.0)
         self._drive_update_ui(
-            {"state": "stop", "elapsed": 19.0, "duration": 300.0, "volume": "50"},
+            {"state": "stop", "elapsed": 10.0, "duration": 300.0, "volume": "50"},
             {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
         )
         self.assertTrue(cleanup_called[0],

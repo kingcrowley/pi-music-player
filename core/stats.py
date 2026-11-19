@@ -625,7 +625,7 @@ class PlayStats:
             return []
 
     def export_csv(self, csv_path: Optional[str] = None) -> Optional[str]:
-        """Export all completed plays to a CSV file.
+        """Export all play data to a CSV file.
 
         Args:
             csv_path: Optional path for output CSV. If None, uses
@@ -821,12 +821,13 @@ class PlayStats:
                 )
             else:
                 # Persist the consumed flag BEFORE deleting history,
-                # so if save fails the flag remains true and we retry next launch.
+                # so if save fails we restore the flag to true and retry next launch.
                 config_owner.set("stats.reset", False)
                 saved = config_owner.save()
                 if not saved:
-                    # The flag is already True in memory; leave it True so the
-                    # next save (or next launch) still triggers the reset.
+                    # The write failed; restore the flag to True so a later save
+                    # (or next launch) still triggers the reset.
+                    config_owner.set("stats.reset", True)
                     logger.warning(
                         "Failed to persist stats.reset=false; skipping reset"
                     )
