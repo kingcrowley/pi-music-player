@@ -585,15 +585,15 @@ class Slice22TestCase(unittest.TestCase):
             stats._conn.commit()
             path = stats.export_csv()
             check("Returns path", path is not None and isinstance(path, str))
-            if path and os.path.exists(path):
-                with open(path) as f:
-                    header = f.readline().strip()
-                    rows = [line.strip() for line in f if line.strip()]
-                check("CSV has header", "id" in header)
-                check("Has 3 data rows (all outcomes)", len(rows) == 3)
-                check("Completed play exported", any('completed.mp3' in r for r in rows))
-                check("Skipped play exported", any('skipped.mp3' in r for r in rows))
-                check("Stopped play exported", any('stopped.mp3' in r for r in rows))
+            check("File exists", os.path.exists(path) if path else False)
+            with open(path) as f:
+                header = f.readline().strip()
+                rows = [line.strip() for line in f if line.strip()]
+            check("CSV has header", "id" in header)
+            check("Has 3 data rows (all outcomes)", len(rows) == 3)
+            check("Completed play exported", any('completed.mp3' in r for r in rows))
+            check("Skipped play exported", any('skipped.mp3' in r for r in rows))
+            check("Stopped play exported", any('stopped.mp3' in r for r in rows))
             stats.close()
 
         finally:
@@ -946,11 +946,10 @@ class Slice22TestCase(unittest.TestCase):
         rows = self._all_rows(self._dash._stats)
         self.assertEqual(len(rows), 1, "Exactly one row expected")
         self.assertIsNone(rows[0]["ended_at"], "Row should be open before quitting")
-        # Simulate quitting mid-track: call _on_close directly
-        try:
-            self._dash._on_close()
-        except Exception:
-            pass
+        # Simulate quitting mid-track: call _on_close directly.
+        # Do not swallow errors — if _on_close fails, the test should fail
+        # so the failure is visible rather than silently ignored.
+        self._dash._on_close()
         # The row should have been closed via record_play_end(completed=False).
         # The Dashboard closed its own connection on _on_close, so open a fresh
         # connection to read the final row state.
@@ -969,22 +968,21 @@ class Slice22TestCase(unittest.TestCase):
     def test_update_ui_cleanup_not_called_on_idle_polls(self):
         """cleanup() should NOT run on idle polls (only after finalizing a row)."""
         self._dash = self._make_dashboard(stats_enabled=True)
-        # Mock _maybe_cleanup to track calls
-        cleanup_called = [False]
-        original_maybe_cleanup = self._dash._maybe_cleanup
-        def tracked_maybe_cleanup():
-            cleanup_called[0] = True
-            original_maybe_cleanup()
-        self._dash._maybe_cleanup = tracked_maybe_cleanup
+        # Watch _stats.cleanup directly. The original bug (a439286) called
+        # self._stats.cleanup() from the poll path, bypassing _maybe_cleanup,
+        # so watching only _maybe_cleanup would miss that regression.
+        cleanup_calls = [0]
+        self._dash._stats.cleanup = MagicMock(
+            side_effect=lambda: cleanup_calls.__setitem__(0, cleanup_calls[0] + 1)
+        )
         # Do 10 idle polls: stopped state with an empty song (nothing playing).
-        # These must not trigger cleanup; the old playing-poll version never
-        # reached the idle code path and so could not catch the bug.
+        # These must not trigger cleanup.
         for _ in range(10):
             self._drive_update_ui(
                 {"state": "stop", "elapsed": 0.0, "duration": 0.0, "volume": "50"},
                 {},
             )
-        self.assertFalse(cleanup_called[0],
+        self.assertEqual(cleanup_calls[0], 0,
                          "cleanup() should not run on idle polls (only after finalizing a row)")
         # Now open a row and finalize it (stop) → cleanup should run once
         self._open_row(elapsed=10.0)
@@ -992,8 +990,8 @@ class Slice22TestCase(unittest.TestCase):
             {"state": "stop", "elapsed": 10.0, "duration": 300.0, "volume": "50"},
             {"file": "a.mp3", "id": "1", "title": "T", "artist": "A", "album": "Al"},
         )
-        self.assertTrue(cleanup_called[0],
-                        "cleanup() should run after finalizing a row (stop)")
+        self.assertGreater(cleanup_calls[0], 0,
+                           "cleanup() should run after finalizing a row (stop)")
 
 
 def run_all_tests():
