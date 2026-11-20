@@ -349,16 +349,44 @@ Copy this for each slice:
 ## Phase 3: Music Recommendations
 
 ### Slice 3.1: Recommendation Engine Core
-**Goal:** Local-only "fans also played" suggestions — the first real plugin, exercising `PluginManager` end-to-end.
+**Goal:** Local-only "fans also played" suggestions — the first built-in plugin,
+exercising `PluginManager` end-to-end and exercising the `on_song_change` /
+`on_playback_complete` event dispatch path.
 
 **Target Date:** 2026-12-15
 **Estimated Effort:** 10 days
 
 ### Code Deliverables
 
-- [ ] `plugins/features/recommendations/config.json` — Manifest for the first built-in plugin (`plugin_id: "recommendations"`, `type: "feature"`, capabilities: `["recommendations"]`, `auto_load: true`). Registers a co-occurrence model and hook handlers.
-- [ ] `plugins/features/recommendations/recommendations.py` — `RecommendationEngine` class extending `MusicPlayerPlugin`.
-- [ ] Co-occurrence SQLite schema (in `play_stats.db` or alongside it):
+- [ ] `plugins/recommendations/config.json` — Manifest for the first built-in
+  plugin (`plugin_id: "recommendations"`, `type: "feature"`, capabilities:
+  `["recommendations"]`, `auto_load: true`). Registers a co-occurrence model and
+  hook handlers. The plugin loader only searches one level deep under `plugins/`,
+  so the directory is `plugins/recommendations/` (not `plugins/features/`.
+
+- [ ] `plugins/recommendations/recommendations.py` — `RecommendationEngine`
+  class extending `MusicPlayerPlugin`. Public API:
+  - `__init__(self, config, stats_db_path, music_db_path)` — `stats_db_path`
+    defaults to `config.get("stats.db_path", PlayStats.DEFAULT_DB_PATH)`.
+  - `get_similar_artists(artist, limit=10)` — ranks co-occurring artists
+    by `play_count DESC`.
+  - `get_recommendations_for_current()` — uses the current track's `artist`
+    field and the co-occurrence matrix.
+  - `get_genre_radio(genre)` — returns a shuffled list of all tracks tagged
+    with the given genre (from `album_songs.genre`).
+  - `get_revisit_candidates(days=30)` — returns album paths not played in the
+    last N days, excluding recently played albums.
+  - `get_new_to_you()` — returns artists present in MPD `list albumartist`
+    that are absent from `play_stats.db`. Requires a library scan first
+    (see deliverable #4 below).
+  - `initialize(self, core)` — registers hooks (`on_song_change`,
+    `on_playback_complete`), loads the co-occurrence matrix from disk, and
+    schedules a one-shot rebuild-at-startup if the matrix is stale.
+  - `shutdown(self)` — persists the co-occurrence matrix to disk, cleans up
+    in-memory session state, and unregisters all hook callbacks.
+
+- [ ] Co-occurrence SQLite schema, in a dedicated `cooccurrence` table in
+  `play_stats.db` alongside the existing `plays` table:
   ```sql
   CREATE TABLE IF NOT EXISTS cooccurrence (
       artist_a TEXT NOT NULL,
@@ -366,40 +394,71 @@ Copy this for each slice:
       play_count INTEGER DEFAULT 1,
       PRIMARY KEY (artist_a, artist_b)
   );
-  CREATE INDEX IF NOT EXISTS idx_cooc_a ON cooccurrence(artist_a);
-
-  CREATE TABLE IF NOT EXISTS genres (
-      genre TEXT PRIMARY KEY,
-      artists TEXT  -- comma-separated artist names
-  );
-
-  CREATE TABLE IF NOT EXISTS album_songs (
-      album TEXT,
-      artist TEXT,
-      path TEXT,
-      genre TEXT,
-      PRIMARY KEY (path)
-  );
   ```
-- [ ] `record_session_pair(prev_track, curr_track)` — called after `record_play_end(completed=True)` fires the `on_playback_complete` hook.
-- [ ] `get_similar_artists(artist, limit=10)` — ranks co-occurring artists by `play_count DESC`.
-- [ ] `get_recommendations_for_current()` — uses the current track's `artist` field.
-- [ ] `get_genre_radio(genre)` — shuffles all tracks tagged with the given genre.
-- [ ] `get_revisit_candidates(days=30)` — albums not played in the last N days.
-- [ ] `get_new_to_you()` — artists present in MPD `list albumartist` but absent from `play_stats.db`.
-- [ ] Hook registration in `initialize()`:
-  - `on_song_change` → record current track info
-  - `on_playback_complete` → call `record_session_pair` with previous track
-  - `shutdown()` → clean up in-memory session state
-- [ ] `build_from_history()` — rebuild the co-occurrence matrix from existing `plays` rows in `play_stats.db` (used on first run and for nightly rebuilds).
-- [ ] Nightly rebuild stub (cron or `scheduler.register()` in `initialize()`) — runs `build_from_history()` + `VACUUM`.
+  (The `genres` and `album_songs` tables are described in deliverable #4; the
+  `genres` table is intentionally omitted from this slice — it duplicates
+  `album_songs.genre` and will be added in a later slice.)
+
+- [ ] `record_session_pair(prev_track, curr_track)` — called after
+  `on_playback_complete` fires; appends a co-occurrence pair (same artist or
+  different) to the `cooccurrence` table. Session rule: a listening session
+  consists of consecutive tracks with gaps under 5 minutes; skips do **not**
+  break a session; pairs are stored once as `(artist_a, artist_b)` where
+  `artist_a` was the earlier track and `artist_b` the later track. Blank
+  artist names are ignored. `build_from_history()` must follow the same rules.
+
+- [ ] Library scan deliverable to fill `album_songs` and `genre` data:
+  - [ ] `MusicPlayer.list_albumartist()` — new method returning an iterable
+    of `(artist_name, [album_paths])` from the MPD library, or `None` if
+    not yet implemented (marked "TODO: library listing" in the code).
+  - [ ] `fill_album_songs()` — iterates the MPD library, populates the
+    `album_songs` table (`album`, `artist`, `path`, `genre`) and also
+    updates `album_songs.genre` per artist for later `get_genre_radio()` use.
+  - [ ] New config value `recommendations.scan_library_on_startup` (default:
+    `true`) — when `true`, the plugin calls `fill_album_songs()` during
+    `initialize()` if the `album_songs` table is empty; when `false`, it
+    skips the library scan and `get_genre_radio` returns an empty list.
+  - [ ] `get_genre_radio(genre)` — returns a shuffled list of all track paths
+    from `album_songs` whose `genre` column matches. Returns an empty list
+    if the `album_songs` table is empty and `scan_library_on_startup` was
+    `false` (valid; no data means no radio).
+
+- [ ] Hook registration in `initialize()` (called by `PluginManager` at load):
+  - `on_song_change` → record current track info (artist, album, title) into
+    an in-memory `prev_track` variable.
+  - `on_playback_complete` → call `record_session_pair(prev_track, curr_track)`
+    where `curr_track` is the track just finished; `prev_track` is the
+    previously playing track (may be `None` on first call).
+  - `shutdown()` → persist co-occurrence matrix to disk; clean up in-memory
+    session state; unregister all hook callbacks from `PluginManager`.
+
+- [ ] `build_from_history()` — rebuild the co-occurrence matrix from existing
+  `plays` rows in `play_stats.db`. A "listening session" = consecutive plays
+  with < 5 min gaps between `ended_at` of one track and `started_at` of the
+  next; skips (incomplete plays) do break a session; pairs are stored once as
+  `(artist_a, artist_b)` where `artist_a` played before `artist_b`. Blank
+  artist names are skipped. Runs once at startup (see deliverable below) and
+  on demand (see nightly rebuild note).
+
+- [ ] Startup rebuild-at-demand: in `initialize()`, if the `cooccurrence` table
+  is empty or older than the `plays` table (check `MAX(started_at)` vs
+  `MAX(ended_at)`), call `build_from_history()` once during plugin init so
+  the engine has data before the first user query. No `scheduler.register()`
+  exists — rebuild is one-shot at startup only.
 
 ### Documentation Deliverables
 
-- [ ] Update `docs/features/recommendations.md` — add config defaults, test plan section, performance notes for Pi Zero 2 W
-- [ ] Create `docs/development/plugin-api.md` section for `RecommendationEngine` (API reference already sketched in recommendations.md — expand it)
-- [ ] Update `README.md` — mark Phase 3 as in progress, add `recommendations` to feature table
-- [ ] Update `docs/development/testing.md` — add `test_slice_3_1.py` to test layout table
+- [ ] Update `docs/features/recommendations.md` — add config defaults
+  (`recommendations.scan_library_on_startup`, `recommendations.session_gap_seconds`),
+  test plan section, and performance notes for Pi Zero 2 W.
+- [ ] Update `docs/development/plugin-api.md` — expand the existing API
+  reference for `RecommendationEngine` with the full method signatures,
+  hook events, and config schema. Do **not** create a new file; the file
+  already exists at that path.
+- [ ] Update `README.md` — mark Phase 3 as in progress, add `recommendations`
+  to the feature table.
+- [ ] Update `docs/development/testing.md` — add `tests/test_slice_3_1.py`
+  to the Test Layout table.
 
 ### Test Plan
 
@@ -428,29 +487,87 @@ print(f'After shutdown: {mgr.get_registered_hooks()}')
 
 ### Acceptance Criteria
 
-- [ ] Plugin loads without error via `PluginManager.load_plugins()`
-- [ ] `get_similar_artists('Radiohead')` returns ranked list after ≥50 plays recorded
-- [ ] `get_genre_radio('Blues')` returns shuffled track list (empty list is valid if no genre tags)
-- [ ] `get_revisit_candidates(days=30)` returns albums older than 30 days, excluding recent plays
-- [ ] `get_new_to_you()` returns artists in MPD library not yet in `play_stats.db`
-- [ ] No network calls made (verified by static analysis / no `requests` / `urllib` imports)
-- [ ] Hook callbacks fire on `on_song_change` and `on_playback_complete` (plugin is enabled and receives events)
-- [ ] `shutdown()` cleans up session state; `unload_plugin('recommendations')` returns `True`
-- [ ] `trigger_hook` dispatches callbacks correctly after plugin load (exercises the `register_hook`→`trigger_hook` path end-to-end)
-- [ ] All existing tests continue to pass
+- [ ] Plugin loads without error via `PluginManager.load_plugins()` (the plugin
+  lives at `plugins/recommendations/`, not `plugins/features/`)
+- [ ] `get_similar_artists('Radiohead')` returns a ranked list after ≥50 plays
+  have been recorded in the co-occurrence table; returns `[]` when no data
+  exists.
+- [ ] `get_genre_radio('Blues')` returns a shuffled list of track paths from
+  `album_songs` whose `genre` column matches (empty list is valid if the
+  `album_songs` table is empty and `scan_library_on_startup` was `false`).
+- [ ] `get_revisit_candidates(days=30)` returns album paths not played in the
+  last 30 days, excluding recently played albums.
+- [ ] `get_new_to_you()` returns artists in MPD `list albumartist` that are
+  absent from `play_stats.db` (requires a prior library scan).
+- [ ] No network calls made (verified by static analysis: no `requests` /
+  `urllib` imports anywhere in the plugin module).
+- [ ] Hook callbacks fire on `on_song_change` and `on_playback_complete`
+  (plugin is enabled and receives events; this requires the dashboard to raise
+  those events — see Dependencies below).
+- [ ] `shutdown()` cleans up session state; `unload_plugin('recommendations')`
+  returns `True`.
+- [ ] `trigger_hook` dispatches callbacks correctly after plugin load (the
+  `register_hook`→`trigger_hook` path works end-to-end when the plugin
+  registers hooks via its `initialize()`).
+- [ ] All existing tests continue to pass.
 
 ### Dependencies
 
-- Requires: Slice 2.1 complete (play_stats.db schema), Slice 2.3 complete (plugin hardening, `trigger_hook` correctness)
-- Blocks: Slice 3.2 (Discovery UI needs the engine to render recommendations)
+- Requires: Slice 2.1 complete (play_stats.db schema), Slice 2.3 complete
+  (plugin hardening, `trigger_hook` correctness).
+- Blocks: Slice 3.2 (Discovery UI needs the engine to render recommendations).
+- Requires a one-time library scan to populate `album_songs` and genre data:
+  add a deliverable to `main.py` / `ui/dashboard.py` that raises
+  `on_song_change` and `on_playback_complete` events where `_update_ui` records
+  play start / end, and passes `plugin_mgr` to `run_dashboard` so the
+  RecommendationEngine can receive hooks. Also requires `MusicPlayer.list_artist()`
+  or a library-scan script to fill `album_songs` / `album_songs.genre`.
 
 ### Notes / Risks
 
-- **Risk:** `register_hook` / `trigger_hook` dispatch gap (deferred issue #1) — public `PluginManager.register_hook()` adds to `self.hooks` but `trigger_hook` only reads `_plugin_hooks`. Mitigation: this slice exercises the path via the plugin's `register_hook` → `PluginManager.trigger_hook` chain, surfacing any remaining dispatch bug. If found, fix `trigger_hook` to also walk `self.hooks` (small, safe change).
-- **Risk:** `play_stats.db` and recommendation tables live in the same file — concurrent writes between `PlayStats.save()` and recommendation queries. Mitigation: use SQLite WAL mode (already enabled in `PlayStats.__init__`); add explicit `BEGIN`/`COMMIT` in `record_session_pair`.
-- **Risk:** Co-occurrence matrix grows large with many artists. Mitigation: index on `(artist_a, artist_b)`; `build_from_history()` runs in batches.
-- **Risk:** Pi Zero 2 W performance for `get_similar_artists` with 1000+ artists. Mitigation: limit query to top-N by `play_count` with `LIMIT`; benchmark in test.
-- **Deferred:** Genre tagging requires genre data from mutagen (reads file tags) — can be a follow-up within this slice if time allows; if not, `get_genre_radio` returns empty and is marked "TODO: genre extraction" in the code.
+- **Risk:** Co-occurrence matrix grows large with many artists. Mitigation:
+  the `(artist_a, artist_b)` primary key naturally limits growth; `build_from_history()`
+  runs in batches of 1000 rows; nightly rebuild is a one-shot at startup only
+  (no `scheduler.register()` — see Nightly rebuild note below).
+- **Risk:** `play_stats.db` and recommendation tables live in the same file —
+  concurrent writes between `PlayStats.save()` and recommendation queries.
+  Mitigation: use SQLite WAL mode (already enabled in `PlayStats.__init__`);
+  add explicit `BEGIN`/`COMMIT` in `record_session_pair`.
+- **Risk:** Pi Zero 2 W performance for `get_similar_artists` with 1000+ artists.
+  Mitigation: limit query to top-N by `play_count` with `LIMIT 10`; benchmark
+  in test; accept that full matrix scan is a later-slice optimization.
+- **Risk:** Genre data is absent if the library-scan deliverable hasn't run.
+  Mitigation: `scan_library_on_startup` defaults to `true`; if the
+  `album_songs` table is empty, `get_genre_radio` returns an empty list
+  (valid; no data → no radio).
+- **Deferred:** Nightly rebuild has no mechanism — `scheduler.register()` does
+  not exist anywhere in the codebase. Fix: rebuild on demand at startup only
+  (check if matrix is stale vs plays table), or schedule via a simple
+  `time`-based check that runs once per session, not a recurring cron job.
+- **Deferred:** Genre tagging from mutagen file tags — will be added in a
+  later slice. For this slice, `album_songs.genre` is populated by the
+  library-scan deliverable only.
+- **Deferred:** The `genres` table (comma-separated artist list per genre)
+  duplicates `album_songs.genre` and is intentionally omitted from this slice.
+
+### Smaller points
+
+- The `idx_cooc_a` index is redundant — the primary key already starts with
+  `artist_a`; SQLite automatically creates the necessary index.
+- The test for `get_similar_artists('Radiohead')` after ≥50 plays needs
+  prepared test data in a temporary database, not a real listening history.
+  The test should set up `play_stats.db` with the appropriate rows and then
+  verify the method returns the expected ranked list.
+- The `PluginManager.register_hook()` / `trigger_hook()` dispatch gap (deferred
+  issue #1) is **not** what this slice tests: plugins register hooks through
+  `MusicPlayerPlugin.register_hook()` → stored on the plugin instance → exposed
+  to `PluginManager.get_registered_hooks()` at load time; they are not added
+  to `PluginManager.hooks` / dispatched via `trigger_hook()` in the pattern
+  tested here. The acceptance criterion "trigger_hook dispatches callbacks
+  correctly after plugin load" tests the plugin-load path, not the public
+  `register_hook` dispatch gap.
+- `docs/development/plugin-api.md` already exists — the deliverable says
+  "update", not "create".
 
 ### Slice 3.2: Discovery Features in UI
 **Goal:** Surface recommendations in the dashboard
