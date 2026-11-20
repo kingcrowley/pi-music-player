@@ -27,9 +27,13 @@ sudo apk add cifs-utils
 # services.samba.mountPoints."/mnt/nas/music" = { ... };
 ```
 
-### 2. Create Credentials File
+### 2. Create the directory and credentials file
+
+`/etc/samba/credentials` does not exist until you create it. The directory
+`/etc/samba` may also be missing on a fresh install, so create it first:
 
 ```bash
+sudo mkdir -p /etc/samba
 sudo nano /etc/samba/credentials
 ```
 
@@ -130,6 +134,15 @@ nas-server-ip:/music /mnt/nas/music nfs vers=4.1,hard,intr,rw,exec,x-systemd.aut
 sudo mount -a
 ls /mnt/nas/music/
 ```
+
+> **Note:** A successful `mount -a` only proves the filesystem is mounted. It
+> does **not** guarantee that MPD can read the files. MPD runs as its own
+> user (usually `mpd`) and must be able to traverse the mount and read the
+> audio files. If the share is mounted with `uid=mpd,gid=audio` (CIFS) or
+> exported with the right options (NFS), MPD can read the files; otherwise
+> you may see "permission denied" or an empty library even though
+> `ls /mnt/nas/music/` works for root. Verify by running MPD and checking
+> that the library lists the expected tracks.
 
 ---
 

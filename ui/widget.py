@@ -93,13 +93,17 @@ class TouchButton(TouchWidget):
         self._active_bg = active_bg
         self._active_fg = active_fg
 
-        super().__init__(parent, width=TOUCH_TARGET_SIZE, height=TOUCH_TARGET_SIZE, **kwargs)
+        # Allow callers to override the fixed touch-target dimensions so
+        # labeled actions (e.g. "← Back", "Export CSV") fit without clipping.
+        btn_width = kwargs.pop("width", TOUCH_TARGET_SIZE)
+        btn_height = kwargs.pop("height", TOUCH_TARGET_SIZE)
+        super().__init__(parent, width=btn_width, height=btn_height, **kwargs)
         # Apply normal background color immediately (CodeRabbit fix)
         self.config(bg=self._normal_bg)
 
         self._text_id = self.create_text(
-            TOUCH_TARGET_SIZE // 2,
-            TOUCH_TARGET_SIZE // 2,
+            btn_width // 2,
+            btn_height // 2,
             text=text,
             font=self._font,
             fill=self._normal_fg,

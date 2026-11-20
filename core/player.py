@@ -206,6 +206,8 @@ class MusicPlayer:
             "album": result.get("album", ""),
             "file": result.get("file", ""),
             "time": result.get("time", ""),
+            "duration": result.get("duration", ""),
+            "id": result.get("id", ""),
             "track": result.get("track", ""),
             "genre": result.get("genre", ""),
             "date": result.get("date", ""),

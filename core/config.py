@@ -45,6 +45,7 @@ class Config:
             "db_path": "~/.local/share/pi-music-player/play_stats.db",
             "max_size_mb": 10,
             "retention_days": 365,
+            "reset": False,
         },
     }
 
