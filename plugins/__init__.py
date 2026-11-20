@@ -355,8 +355,10 @@ class PluginManager:
         except Exception as e:
             logger.warning("Error shutting down plugin %s: %s", plugin_id, e)
 
-        # Remove plugin's hook callbacks
-        self._plugin_hooks.pop(plugin_id, None)
+        # Remove plugin's hook callbacks from the public registry
+        for event_name, callbacks in self._plugin_hooks.pop(plugin_id, {}).items():
+            for callback in callbacks:
+                self.unregister_hook(event_name, callback)
 
         del self.plugins[plugin_id]
         del self.plugins_metadata[plugin_id]

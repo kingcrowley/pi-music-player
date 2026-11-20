@@ -51,13 +51,19 @@ class TestFeaturePlugin(MusicPlayerPlugin):
         return ["test-capability"]
 
 
-def _make_temp_plugin_dir(plugin_id="test-plugin", plugin_name="Test Plugin"):
+def _make_temp_plugin_dir(plugin_id="test-plugin", plugin_name="Test Plugin", dir_name=None):
     """Create a temporary plugin directory with manifest + Python module.
+
+    Args:
+        plugin_id: The plugin_id in the manifest.
+        plugin_name: Human-readable name in the manifest.
+        dir_name: Directory name (defaults to plugin_id if None).
 
     Returns the Path to the created plugin directory.
     """
     tmpdir = Path(tempfile.mkdtemp())
-    plugin_dir = tmpdir / plugin_id
+    dir_name = dir_name or plugin_id
+    plugin_dir = tmpdir / dir_name
     plugin_dir.mkdir(exist_ok=True)
 
     # Manifest
@@ -186,10 +192,17 @@ class Slice23TestCase(unittest.TestCase):
         self.assertEqual(plugin.hook_fired[0], (("arg1",), {"kw": "val"}))
 
     def test_plugin_reload_preserves_source_dir(self):
-        """reload_plugin unloads then reloads from the original source directory."""
-        tmpdir = _make_temp_plugin_dir("rt", "Reload Test")
+        """reload_plugin unloads then reloads from the original source directory.
+
+        The fixture directory name (rt_src) deliberately differs from the
+        manifest plugin_id (rt). Without the recorded-source-directory branch,
+        reload_plugin falls back to load_plugin("rt"), which looks for a
+        directory named "rt" and fails — so this test actually exercises the
+        source-directory preservation logic.
+        """
+        tmpdir = _make_temp_plugin_dir("rt", "Reload Test", dir_name="rt_src")
         self.tmpdirs.append(tmpdir)
-        plugin_dir = Path(tmpdir) / "rt"
+        plugin_dir = Path(tmpdir) / "rt_src"
         mgr = PluginManager(core_engine=None, plugin_dir=str(tmpdir))
         plugin = mgr.load_plugin_from_dir(plugin_dir)
         self.assertIsNotNone(plugin)
