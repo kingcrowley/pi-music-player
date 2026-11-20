@@ -71,8 +71,7 @@ def _resolve_song_path(song_file: str, music_dir: str) -> str:
 def main() -> int:
     """Entry point for the Low-Resource Linux Music Player."""
     print("=" * 50)
-    print("Low-Resource Linux Music Player")
-    print("Phase 1/2 complete — MPD playback, stats UI, plugin system")
+    print("Low-Resource Linux Music Player — Phase 2 in progress")
     print("=" * 50)
 
     # Load configuration
@@ -124,7 +123,7 @@ def main() -> int:
     cache.close()
     player.disconnect()
 
-    print("\n✅ Slice 1.5 test complete!")
+    print("\n✅ Low-Resource Linux Music Player shutdown complete!")
     return 0
 
 

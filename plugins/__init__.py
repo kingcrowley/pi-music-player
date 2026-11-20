@@ -429,6 +429,11 @@ class PluginManager:
         """Trigger all callbacks registered for an event.
 
         Only triggers hooks for plugins that are currently enabled.
+        Note: only callbacks registered via plugin.register_hook() (which
+        stores them in _plugin_hooks) are dispatched. Callbacks added
+        directly through PluginManager.register_hook() go into self.hooks
+        but are NOT invoked by trigger_hook. Use plugin.register_hook() for
+        event dispatch.
 
         Iterates over a snapshot of _plugin_hooks so that if a callback
         calls unload_plugin() during dispatch, the dictionary size change

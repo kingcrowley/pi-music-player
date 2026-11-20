@@ -6,21 +6,29 @@ How to run the test suite for the Low-Resource Linux Music Player.
 
 | File | What it covers |
 |------|----------------|
-| `tests/test_slice_1_1.py` | MPD connection, reconnect, `get_status()`, `get_current_song()`, volume/seek |
+| `tests/test_artwork.py` | Album art extraction + web fallback + LRU cache |
+| `tests/test_slice_1_1.py` | MPD connection, reconnect, `get_status()`, `get_current_song()`, volume/seek (manual, needs live MPD) |
 | `tests/test_slice_1_4.py` | System detection, distro/audio/display detection, MPD config generation, Config schema |
 | `tests/test_slice_1_5.py` | Styles, UI widgets, plugin base class, manifest loading, PluginManager basics |
 | `tests/test_slice_2_1.py` | PlayStats SQLite: record/queries/retention/CSV export, config defaults |
 | `tests/test_slice_2_2.py` | Slice 2.2 query methods + Dashboard `_update_ui` state machine |
+| `tests/test_slice_2_3.py` | Plugin system hardening (shutdown_all, unload hooks, reload, enable/disable) |
 
 ## Running the Suite
 
-### Full suite (most test files headless, Slice 1.1 requires MPD)
+### Full suite (discovery command + select manual scripts)
+
+The `unittest discover` pattern `test_*.py` will include `test_slice_1_1.py`, but that file is a manual script with no `unittest.TestCase` class and no `test_` functions — its checks only run through the `run_all_tests()` `__main__` block. The Test Layout table lists it so developers know it exists, but it will not be collected by the discovery command.
+
+To run the full automated suite (all collected tests, excluding the manual script):
 
 ```bash
-# Run the headless discovery suite (all files except test_slice_1_1.py)
 python -m unittest discover -s tests -p "test_*.py"
+```
 
-# Run the Slice 1.1 MPD acceptance checks (requires a running MPD)
+To run the Slice 1.1 MPD acceptance checks (requires a running MPD):
+
+```bash
 python3 tests/test_slice_1_1.py
 ```
 
@@ -32,8 +40,7 @@ The dashboard tests (`test_slice_1_5.py`) create a real `tk.Tk()` root window an
 xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
 ```
 
-- The discovery command runs headless (no MPD required) because `MusicPlayer` and `PlayStats` are exercised through mocks and temporary databases. It does not run `tests/test_slice_1_1.py`, which needs a running MPD.
-- The dashboard tests spin up a real `tk.Tk()` root and withdraw it, so they need a display — `xvfb-run` provides a virtual one.
+The discovery command runs headless (no MPD required) because `MusicPlayer` and `PlayStats` are exercised through mocks and temporary databases. It does not execute `tests/test_slice_1_1.py`, which needs a running MPD. The dashboard tests spin up a real `tk.Tk()` root and withdraw it, so they need a display — `xvfb-run` provides a virtual one.
 
 ### Slice 1.1 MPD acceptance checks (manual, not collected by discovery)
 

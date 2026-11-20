@@ -22,35 +22,6 @@ from core.plugin_base import MusicPlayerPlugin
 from plugins import PluginManager
 
 
-# A minimal test plugin implementation — a concrete subclass we can
-# import from a temp module file.
-class TestFeaturePlugin(MusicPlayerPlugin):
-    """Simple feature plugin for lifecycle testing."""
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.init_called = False
-        self.shutdown_called = False
-        self.hook_fired = []
-
-    def initialize(self, core):
-        self.core = core
-        self._set_initialized(True)
-        self.init_called = True
-        # Register a hook
-        self.register_hook("on_test_event", self._on_test_event)
-        return True
-
-    def _on_test_event(self, *args, **kwargs):
-        self.hook_fired.append((args, kwargs))
-
-    def shutdown(self):
-        self.shutdown_called = True
-
-    def get_capabilities(self):
-        return ["test-capability"]
-
-
 def _make_temp_plugin_dir(plugin_id="test-plugin", plugin_name="Test Plugin", dir_name=None):
     """Create a temporary plugin directory with manifest + Python module.
 
@@ -199,6 +170,9 @@ class Slice23TestCase(unittest.TestCase):
         reload_plugin falls back to load_plugin("rt"), which looks for a
         directory named "rt" and fails — so this test actually exercises the
         source-directory preservation logic.
+
+        Also asserts hook cleanup: after reload the plugin's callback appears
+        exactly once in the public registry, and after unload it is gone.
         """
         tmpdir = _make_temp_plugin_dir("rt", "Reload Test", dir_name="rt_src")
         self.tmpdirs.append(tmpdir)
@@ -208,6 +182,9 @@ class Slice23TestCase(unittest.TestCase):
         self.assertIsNotNone(plugin)
         self.assertTrue(plugin.init_called)
         pid = plugin.config.get("plugin_id", "rt")
+
+        # After load, the plugin's callback is registered exactly once
+        self.assertEqual(len(mgr.hooks.get("on_test_event", [])), 1)
 
         # Reload
         ok = mgr.reload_plugin(pid)
@@ -219,6 +196,15 @@ class Slice23TestCase(unittest.TestCase):
         self.assertTrue(new_plugin.init_called)
         # Should be a different instance object
         self.assertIsNot(plugin, new_plugin, "New instance after reload")
+        # After reload, the old callback was unregistered and the new one
+        # registered exactly once — no stale copies accumulate.
+        self.assertEqual(len(mgr.hooks.get("on_test_event", [])), 1,
+                         "reload should leave exactly one callback registered")
+
+        # Unload: the callback is removed from the public registry
+        mgr.unload_plugin(pid)
+        self.assertEqual(len(mgr.hooks.get("on_test_event", [])), 0,
+                         "unload should remove the plugin's callbacks")
 
     def test_shutdown_all_cleans_up_all_plugins(self):
         """shutdown_all() shuts down every loaded plugin."""
