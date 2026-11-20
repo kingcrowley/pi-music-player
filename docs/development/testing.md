@@ -14,23 +14,32 @@ How to run the test suite for the Low-Resource Linux Music Player.
 
 ## Running the Suite
 
+### Full suite (most test files headless, Slice 1.1 requires MPD)
+
 ```bash
-# Run everything
+# Run the headless discovery suite (all files except test_slice_1_1.py)
 python -m unittest discover -s tests -p "test_*.py"
 
-# Run a single file
-python -m unittest tests.test_slice_2_2
-
-# Run a single test class
-python -m unittest tests.test_slice_2_2.Slice22TestCase
-
-# Run a single test method
-python -m unittest tests.test_slice_2_2.Slice22TestCase.test_get_top_tracks_basic
+# Run the Slice 1.1 MPD acceptance checks (requires a running MPD)
+python3 tests/test_slice_1_1.py
 ```
 
-The full suite runs headless (no MPD required) because `MusicPlayer` and
-`PlayStats` are exercised through mocks and temporary databases. The dashboard
-tests spin up a real `tk.Tk()` root window and withdraw it immediately.
+### Dashboard tests require a display server
+
+The dashboard tests (`test_slice_1_5.py`) create a real `tk.Tk()` root window and withdraw it immediately. On Linux without an X server or a desktop session, `tk.Tk()` raises an error before the window is withdrawn. To run these tests in headless environments, use a virtual framebuffer:
+
+```bash
+xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
+```
+
+- The discovery command runs headless (no MPD required) because `MusicPlayer` and `PlayStats` are exercised through mocks and temporary databases. It does not run `tests/test_slice_1_1.py`, which needs a running MPD.
+- The dashboard tests spin up a real `tk.Tk()` root and withdraw it, so they need a display — `xvfb-run` provides a virtual one.
+
+### Slice 1.1 MPD acceptance checks (manual, not collected by discovery)
+
+`tests/test_slice_1_1.py` defines no `unittest.TestCase` class and no `test_` function. Its checks run only through the `run_all_tests()` function under the `__main__` block. The Test Layout table lists this file, and the acceptance criteria require full-suite runs, so a developer who follows this guide can skip these MPD checks without noticing if only using the discovery command.
+
+Use the separate command above to run them.
 
 ## Acceptance Criteria
 
@@ -49,7 +58,10 @@ A slice is "done" when:
   `Slice<N>M>TestCase(unittest.TestCase)` naming convention.
 - Use `tempfile.mkdtemp()` for any database or cache file and clean it up in
   `tearDown()` so tests never touch the real `play_stats.db`.
-- Mock `MusicPlayer` with `unittest.mock.MagicMock` (see `MockMusicPlayer` in
-  `test_slice_2_2.py` for a richer pattern) rather than spinning up MPD.
+- Mock `MusicPlayer` with `unittest.mock.MagicMock` rather than spinning up MPD.
 - The `check()` helper in `test_slice_2_2.py` raises immediately on failure so
   the suite is green only when every assertion genuinely holds.
+- The `check()` helper in `test_slice_2_1.py` also raises on failure
+  (updated to match Slice 2.2 behavior).
+- Do not run `tests/test_slice_1_1.py` under the discovery command; it requires
+  a running MPD and runs separately.

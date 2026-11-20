@@ -146,11 +146,25 @@ class Slice14TestCase(unittest.TestCase):
     def test_detect_display_unknown(self, mock_run):
         """Unknown display when no env vars set."""
         import os
-        for var in ("DISPLAY", "WAYLAND_DISPLAY"):
-            os.environ.pop(var, None)
-        detector = SystemDetector()
-        server = detector.detect_display_server()
-        check("Return unknown when no display env vars", server == "unknown")
+        saved_display = os.environ.get("DISPLAY")
+        saved_wayland = os.environ.get("WAYLAND_DISPLAY")
+        try:
+            for var in ("DISPLAY", "WAYLAND_DISPLAY"):
+                os.environ.pop(var, None)
+            detector = SystemDetector()
+            server = detector.detect_display_server()
+            check("Return unknown when no display env vars", server == "unknown")
+        finally:
+            # Restore the environment so later tests (which create Tk roots)
+            # are not affected by the DISPLAY removal this test performed.
+            if saved_display is None:
+                os.environ.pop("DISPLAY", None)
+            else:
+                os.environ["DISPLAY"] = saved_display
+            if saved_wayland is None:
+                os.environ.pop("WAYLAND_DISPLAY", None)
+            else:
+                os.environ["WAYLAND_DISPLAY"] = saved_wayland
 
     # --- Distro Detection ---
 

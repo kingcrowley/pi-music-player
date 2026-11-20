@@ -254,7 +254,7 @@ Copy this for each slice:
 - Plugin system: `plugins/__init__.py`, `core/plugin_base.py`
 - Tkinter touch dashboard: `ui/dashboard.py`, `ui/styles.py`, `ui/widget.py`
 
-**Test criteria:** 83 tests pass (test_slice_1_1.py, test_slice_1_4.py, test_slice_1_5.py, test_slice_2_1.py). All MPD calls wrapped in try/except, reconnect logic works, no exceptions propagate to Tkinter event loop.
+**Test criteria:** The automated test runner collects tests from test_slice_1_4.py, test_slice_1_5.py, and test_slice_2_1.py. test_slice_1_1.py is a manual check script and is not included in the automated count. All MPD calls wrapped in try/except, reconnect logic works, no exceptions propagate to Tkinter event loop.
 
 ### Slice 1.2: Album Art — Local Extraction Only ✅ Merged (PR #2)
 **Goal:** Extract embedded artwork from FLAC/MP3 files, cache to disk
@@ -340,7 +340,7 @@ Copy this for each slice:
 - Recent History (last 20 plays with timestamps)
 - Export to CSV button (for personal analysis)
 
-**Test criteria:** 98 unit tests pass (test_slice_2_2.py). All stats views populate correctly; export creates valid CSV; retention cleanup only closes old open rows and prunes by size (not age).
+**Test criteria:** 32 unit tests pass (test_slice_2_2.py). All stats views populate correctly; export creates valid CSV; retention cleanup only closes old open rows and prunes by size (not age).
 
 **Integration test:** Play 20+ tracks naturally (mix of complete, skip, restart); check Stats screen — verify all numbers plausible; restart app — verify stats persist; check DB size: `ls -lh play_stats.db` should be < 100KB.
 
@@ -352,7 +352,7 @@ Copy this for each slice:
 **Goal:** Local-only "fans also played" suggestions
 
 **Planned deliverables:**
-- `plugins/recommendations.py` — `RecommendationEngine` class
+- `plugins/features/recommendations.py` — `RecommendationEngine` class
 - Co-occurrence model: For each artist, which other artists appear in same listening sessions?
 - Session = continuous playback with < 5 min gaps
 - Build artist→artist affinity matrix (SQLite table)

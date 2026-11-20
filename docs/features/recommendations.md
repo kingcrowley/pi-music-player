@@ -208,10 +208,10 @@ if stats.is_completed():
 
 ### RecommendationEngine Class
 
-Located in `plugins/recommendations.py`:
+Located in `plugins/features/recommendations.py`:
 
 ```python
-from plugins.recommendations import RecommendationEngine
+from plugins.features.recommendations import RecommendationEngine
 
 engine = RecommendationEngine(
     stats_db_path='play_stats.db',
