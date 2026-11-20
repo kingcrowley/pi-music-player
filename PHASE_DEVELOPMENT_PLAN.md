@@ -349,19 +349,108 @@ Copy this for each slice:
 ## Phase 3: Music Recommendations
 
 ### Slice 3.1: Recommendation Engine Core
-**Goal:** Local-only "fans also played" suggestions
+**Goal:** Local-only "fans also played" suggestions — the first real plugin, exercising `PluginManager` end-to-end.
 
-**Planned deliverables:**
-- `plugins/features/recommendations.py` — `RecommendationEngine` class
-- Co-occurrence model: For each artist, which other artists appear in same listening sessions?
-- Session = continuous playback with < 5 min gaps
-- Build artist→artist affinity matrix (SQLite table)
-- `get_similar_artists(artist, limit=10)` → ranked list
-- `get_recommendations_for_current()` → based on current track's artist
-- `get_genre_radio(genre)` → shuffle tracks from same genre
-- Runs in background, updates model nightly or on demand
+**Target Date:** 2026-12-15
+**Estimated Effort:** 10 days
 
-**Test criteria:** Returns plausible suggestions after ~50 plays; runs in < 200ms on Pi Zero; no network calls.
+### Code Deliverables
+
+- [ ] `plugins/features/recommendations/config.json` — Manifest for the first built-in plugin (`plugin_id: "recommendations"`, `type: "feature"`, capabilities: `["recommendations"]`, `auto_load: true`). Registers a co-occurrence model and hook handlers.
+- [ ] `plugins/features/recommendations/recommendations.py` — `RecommendationEngine` class extending `MusicPlayerPlugin`.
+- [ ] Co-occurrence SQLite schema (in `play_stats.db` or alongside it):
+  ```sql
+  CREATE TABLE IF NOT EXISTS cooccurrence (
+      artist_a TEXT NOT NULL,
+      artist_b TEXT NOT NULL,
+      play_count INTEGER DEFAULT 1,
+      PRIMARY KEY (artist_a, artist_b)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cooc_a ON cooccurrence(artist_a);
+
+  CREATE TABLE IF NOT EXISTS genres (
+      genre TEXT PRIMARY KEY,
+      artists TEXT  -- comma-separated artist names
+  );
+
+  CREATE TABLE IF NOT EXISTS album_songs (
+      album TEXT,
+      artist TEXT,
+      path TEXT,
+      genre TEXT,
+      PRIMARY KEY (path)
+  );
+  ```
+- [ ] `record_session_pair(prev_track, curr_track)` — called after `record_play_end(completed=True)` fires the `on_playback_complete` hook.
+- [ ] `get_similar_artists(artist, limit=10)` — ranks co-occurring artists by `play_count DESC`.
+- [ ] `get_recommendations_for_current()` — uses the current track's `artist` field.
+- [ ] `get_genre_radio(genre)` — shuffles all tracks tagged with the given genre.
+- [ ] `get_revisit_candidates(days=30)` — albums not played in the last N days.
+- [ ] `get_new_to_you()` — artists present in MPD `list albumartist` but absent from `play_stats.db`.
+- [ ] Hook registration in `initialize()`:
+  - `on_song_change` → record current track info
+  - `on_playback_complete` → call `record_session_pair` with previous track
+  - `shutdown()` → clean up in-memory session state
+- [ ] `build_from_history()` — rebuild the co-occurrence matrix from existing `plays` rows in `play_stats.db` (used on first run and for nightly rebuilds).
+- [ ] Nightly rebuild stub (cron or `scheduler.register()` in `initialize()`) — runs `build_from_history()` + `VACUUM`.
+
+### Documentation Deliverables
+
+- [ ] Update `docs/features/recommendations.md` — add config defaults, test plan section, performance notes for Pi Zero 2 W
+- [ ] Create `docs/development/plugin-api.md` section for `RecommendationEngine` (API reference already sketched in recommendations.md — expand it)
+- [ ] Update `README.md` — mark Phase 3 as in progress, add `recommendations` to feature table
+- [ ] Update `docs/development/testing.md` — add `test_slice_3_1.py` to test layout table
+
+### Test Plan
+
+```bash
+# Run the new slice tests
+python -m unittest tests.test_slice_3_1 -v
+
+# Run full suite (should be green)
+python -m unittest discover -s tests -p "test_*.py"
+
+# Verify plugin loads and unloads cleanly via PluginManager
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from plugins import PluginManager
+mgr = PluginManager(plugin_dir='plugins')
+count = mgr.load_plugins()
+print(f'Loaded {count} plugin(s)')
+for p in mgr.get_all_plugins():
+    print(f'  - {p.name} v{p.version}')
+    print(f'    capabilities: {p.get_capabilities()}')
+    print(f'    hooks: {mgr.get_registered_hooks()}')
+mgr.shutdown_all()
+print(f'After shutdown: {mgr.get_registered_hooks()}')
+"
+```
+
+### Acceptance Criteria
+
+- [ ] Plugin loads without error via `PluginManager.load_plugins()`
+- [ ] `get_similar_artists('Radiohead')` returns ranked list after ≥50 plays recorded
+- [ ] `get_genre_radio('Blues')` returns shuffled track list (empty list is valid if no genre tags)
+- [ ] `get_revisit_candidates(days=30)` returns albums older than 30 days, excluding recent plays
+- [ ] `get_new_to_you()` returns artists in MPD library not yet in `play_stats.db`
+- [ ] No network calls made (verified by static analysis / no `requests` / `urllib` imports)
+- [ ] Hook callbacks fire on `on_song_change` and `on_playback_complete` (plugin is enabled and receives events)
+- [ ] `shutdown()` cleans up session state; `unload_plugin('recommendations')` returns `True`
+- [ ] `trigger_hook` dispatches callbacks correctly after plugin load (exercises the `register_hook`→`trigger_hook` path end-to-end)
+- [ ] All existing tests continue to pass
+
+### Dependencies
+
+- Requires: Slice 2.1 complete (play_stats.db schema), Slice 2.3 complete (plugin hardening, `trigger_hook` correctness)
+- Blocks: Slice 3.2 (Discovery UI needs the engine to render recommendations)
+
+### Notes / Risks
+
+- **Risk:** `register_hook` / `trigger_hook` dispatch gap (deferred issue #1) — public `PluginManager.register_hook()` adds to `self.hooks` but `trigger_hook` only reads `_plugin_hooks`. Mitigation: this slice exercises the path via the plugin's `register_hook` → `PluginManager.trigger_hook` chain, surfacing any remaining dispatch bug. If found, fix `trigger_hook` to also walk `self.hooks` (small, safe change).
+- **Risk:** `play_stats.db` and recommendation tables live in the same file — concurrent writes between `PlayStats.save()` and recommendation queries. Mitigation: use SQLite WAL mode (already enabled in `PlayStats.__init__`); add explicit `BEGIN`/`COMMIT` in `record_session_pair`.
+- **Risk:** Co-occurrence matrix grows large with many artists. Mitigation: index on `(artist_a, artist_b)`; `build_from_history()` runs in batches.
+- **Risk:** Pi Zero 2 W performance for `get_similar_artists` with 1000+ artists. Mitigation: limit query to top-N by `play_count` with `LIMIT`; benchmark in test.
+- **Deferred:** Genre tagging requires genre data from mutagen (reads file tags) — can be a follow-up within this slice if time allows; if not, `get_genre_radio` returns empty and is marked "TODO: genre extraction" in the code.
 
 ### Slice 3.2: Discovery Features in UI
 **Goal:** Surface recommendations in the dashboard
