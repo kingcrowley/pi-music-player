@@ -20,7 +20,7 @@ docs/
 ├── installation/
 │   ├── README.md                     # Installation overview
 │   ├── raspberry-pi-setup.md         # Complete Raspberry Pi walkthrough (all models)
-│   ├── cross-distro.md              # Debian, Fedora, Arch, Alpine, NixOS
+│   ├── cross-distro.md              # Debian, Ubuntu, Fedora, Arch, Alpine, NixOS
 │   └── docker.md                     # Docker deployment (ARM64)
 ├── configuration/
 │   ├── README.md                     # Config overview
@@ -31,19 +31,21 @@ docs/
 │   ├── keyboard-shortcuts.md         # All keybindings
 │   └── touch-gestures.md            # Touchscreen interaction guide
 ├── features/
-│   ├── play-statistics.md            # How stats work, schema reference
-│   ├── recommendations.md            # Algorithm explanation
-│   └── remote-control.md            # Web API + web dashboard docs
-├── troubleshooting/
-│   ├── README.md                     # Common issues
-│   ├── audio-backend.md              # ALSA/PipeWire/Pulse issues
-│   ├── network-mounts.md             # SMB/NFS mount failures
-│   └── touch-screen.md               # Calibration, driver issues
+│   ├── play-statistics.md            # Play statistics schema and usage
+│   ├── recommendations.md            # Music recommendation algorithm
+│   └── remote-control.md             # Web API and remote dashboard
 ├── development/
 │   ├── README.md                     # Contributor guide
 │   ├── slice-plan.md                 # This document
+│   ├── plugin-api.md                 # Plugin API specification
+│   ├── plugin-developer-guide.md     # Plugin development guide
 │   ├── testing.md                    # How to run tests
 │   └── release-process.md           # PyInstaller builds, GitHub release workflow
+├── troubleshooting/
+│   ├── README.md                     # Common issues index
+│   ├── audio-backend.md              # ALSA/PipeWire/PulseAudio issues
+│   ├── network-mounts.md             # SMB/NFS mount failures
+│   └── touch-screen.md               # Touchscreen calibration and drivers
 └── assets/
     ├── screenshots/                  # Full-res screenshots for README
     └── diagrams/                     # Architecture diagrams (ASCII + SVG)
@@ -56,6 +58,7 @@ docs/
 - **Each slice updates relevant doc files** — tracked in the slice checklist
 - **README.md updated at Phase 1, Phase 4 completion** for major feature milestones
 - **GitHub releases tagged** with changelog for each phase
+- **Plugin docs separate** in `docs/development/` for plugin developers
 
 ### Documentation Standards
 
@@ -141,66 +144,6 @@ The plugin system is integrated across multiple slices. Plugin development inter
 
 ---
 
-## GitHub Documentation Structure
-
-```
-docs/
-├── README.md                         # Project overview, quickstart
-├── installation/
-│   ├── README.md                     # Installation overview
-│   ├── raspberry-pi-setup.md         # Complete Raspberry Pi walkthrough (all models)
-│   ├── cross-distro.md              # Debian, Ubuntu, Fedora, Arch, Alpine, NixOS
-│   └── docker.md                     # Docker deployment (ARM64)
-├── configuration/
-│   ├── README.md                     # Config overview
-│   ├── mpd-setup.md                  # MPD daemon configuration per backend
-│   └── network-mounts.md             # SMB/NFS fstab templates
-├── usage/
-│   ├── dashboard-guide.md            # UI feature reference
-│   ├── keyboard-shortcuts.md         # All keybindings
-│   └── touch-gestures.md            # Touchscreen interaction guide
-├── features/
-│   ├── play-statistics.md            # Play statistics schema and usage
-│   ├── recommendations.md            # Music recommendation algorithm
-│   └── remote-control.md             # Web API and remote dashboard
-├── development/
-│   ├── README.md                     # Contributor guide
-│   ├── plugin-api.md                 # Plugin API specification
-│   ├── plugin-developer-guide.md     # Plugin development guide
-│   ├── testing.md                    # How to run tests
-│   └── release-process.md           # PyInstaller builds, GitHub release workflow
-├── troubleshooting/
-│   ├── README.md                     # Common issues index
-│   ├── audio-backend.md              # ALSA/PipeWire/PulseAudio issues
-│   ├── network-mounts.md             # SMB/NFS mount failures
-│   └── touch-screen.md               # Touchscreen calibration and drivers
-└── assets/
-    ├── screenshots/                  # Full-res screenshots for README
-    └── diagrams/                     # Architecture diagrams (ASCII + SVG)
-```
-
-### GitHub-Specific Documentation Workflow
-
-- **`docs/` committed directly to repo** — rendered natively via GitHub's Markdown preview
-- **`/docs` folder → GitHub Pages** enabled in repo settings (automatic HTTPS hosting)
-- **Each slice updates relevant doc files** — tracked in the slice checklist
-- **README.md updated at Phase 1, Phase 4 completion** for major feature milestones
-- **GitHub releases tagged** with changelog for each phase
-- **Plugin docs separate** in `docs/development/` for plugin developers
-
-### Documentation Standards
-
-| Doc Type | Target Audience | Format | Updated By |
-|----------|----------------|--------|------------|
-| README.md | Everyone | Markdown | Slice 1.5 / Phase 1 done |
-| Installation guides | New users | Markdown + bash blocks | Slice 1.4 / B2 |
-| Feature docs | Users | Markdown | Feature slice + owner |
-| Troubleshooting | All users | Question/Answer (H2 headings) | As bugs are found |
-| Contributor guide | Developers | Markdown | Slice B3 |
-| Plugin API | Plugin developers | Markdown | Plugin core |
-
----
-
 ## Slice Template (Updated — Now Includes Docs)
 
 Copy this for each slice:
@@ -212,6 +155,7 @@ Copy this for each slice:
 **Estimated Effort:** N days
 
 ### Code Deliverables
+- [ ] File/module: description
 - [ ] File/module: description
 
 ### Documentation Deliverables
@@ -242,107 +186,339 @@ Copy this for each slice:
 
 ## Phase 1: Core Player (Foundation) ✅ Complete
 
-### Slice 1.1: MPD Connection & Basic Controls ✅ Merged (PR #1)
+### Slice 1.1: MPD Connection & Basic Controls ✅ Merged (PR #1, `cdbbca8`)
 **Goal:** Reliable MPD communication with automatic reconnection
 
-**Merged commits:** `80adff5` feat(slice-2.1): Play Statistics Database Schema & Event Capture (rebased on main (#7)), `e8cf7a8` feat(slice-1.5): Tkinter Touch UI & Plugin System Foundation (#8), `2146ee4` Slice 1.4: System Detection & Config Management (#5), `415d248` feat(artwork): Album art extraction with LRU cache (#2), `6941474` docs: Correct Raspberry Pi setup guide
+#### Deliverables
+- `core/player.py` — `MusicPlayer` class with:
+  - `connect()` with exponential backoff (1s, 2s, 4s, max 30s) — retries internally without raising; gives up after ~30s and returns `False`
+  - `get_current_song()` returning empty dict on failure (never raises)
+  - `play()`, `pause()`, `toggle_play()`, `next()`, `previous()`, `stop()`
+  - `get_status()` → dict with `state`, `volume`, `elapsed`, `duration`
+  - `set_volume(0-100)`
+  - `is_connected()` → bool flag set by connect
 
-**Deliverables completed:**
-- `core/player.py` — `MusicPlayer` class with `connect()` with exponential backoff, `get_current_song()`, `play()`, `pause()`, `toggle_play()`, `next()`, `previous()`, `stop()`, `set_volume(0-100)`, `is_connected()`
-- `configs/mpd.conf.alsa`, `.pipewire`, `.pulse`, `.null` templates
-- `core/system.py` — `SystemDetector` class with `detect_audio_backend()`, `detect_display_server()`, `detect_distro()`, `get_mpd_config_template()`, `generate_mpd_conf()`
-- Plugin system: `plugins/__init__.py`, `core/plugin_base.py`
-- Tkinter touch dashboard: `ui/dashboard.py`, `ui/styles.py`, `ui/widget.py`
+#### Technical Addendum (from review): Network & Error Handling
+- **All MPD calls wrapped** in try/except — no exception should ever propagate to the Tkinter event loop
+- **Reconnect logic**: on failed command, call `connect()` once and retry the command once
+- **Status polling**: `get_status()` is called from background thread; safe because it never touches Tkinter
+- **MPD socket lifecycle**: Ensure systemd service file declares `After=mpd.service network.target` so MPD socket is ready before UI starts
+- **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
 
-**Test criteria:** The automated test runner collects tests from test_slice_1_4.py, test_slice_1_5.py, and test_slice_2_1.py. test_slice_1_1.py is a manual check script and is not included in the automated count. All MPD calls wrapped in try/except, reconnect logic works, no exceptions propagate to Tkinter event loop.
+#### Test Criteria (Manual)
+```bash
+# 1. Start MPD with test music
+mpd --stdout --no-daemon  # in separate terminal
 
-### Slice 1.2: Album Art — Local Extraction Only ✅ Merged (PR #2)
-**Goal:** Extract embedded artwork from FLAC/MP3 files, cache to disk
+# 2. Run test script
+python3 -c "
+from core.player import MusicPlayer
+p = MusicPlayer()
+print('Connected:', p.client is not None)
+print('Status:', p.get_status())
+print('Current song:', p.get_current_song())
+p.toggle_play()
+import time; time.sleep(2)
+print('After play:', p.get_status()['state'])
+p.next()
+print('Next song:', p.get_current_song())
+p.set_volume(50)
+print('Volume:', p.get_status()['volume'])
+"
+```
 
-**Merged commits:** `415d248` feat(artwork): Album art extraction with LRU cache (#2), `66dd8d4` test(slide-2.2): Add comprehensive slice 2.2 test suite
+**Pass if:** All commands execute without exception, state changes visible in MPD output.
 
-**Deliverables completed:**
-- `core/artwork.py` — `ArtworkCache` class with `get_art(file_path)` → returns cached image path or `None`, LRU cache with configurable max size (default 50MB), thread-safe with `queue.Queue` + background worker, extracts from FLAC, MP3, M4A
-
-**Test criteria:** Returns valid image paths for files with embedded art; returns `None` for files without; cache directory stays under size limit.
-
-### Slice 1.3: Album Art — Web Fallback with MBID Resolution ✅ Merged (PR #3)
-**Goal:** Fetch cover art from Cover Art Archive when no embedded art exists
-
-**Merged commits:** `4b8cc7d` fix(artwork): Address remaining CodeRabbit review comments, `ac8b87b` docs: fix second pi-zero-setup reference in PHASE_DEVELOPMENT_PLAN.md
-
-**Deliverables completed:**
-- Enhanced `ArtworkCache.get_art()` with fallback chain: 1. Embedded art, 2. Local sidecar (`cover.jpg` / `folder.jpg`), 3. Cover Art Archive via MusicBrainz Release ID (MBID) — extract MBID from file tags, query `https://coverartarchive.org/release/{MBID}`, download `thumbnails.small` image
-- All network calls: `timeout=3.5`, custom User-Agent, retry once
-
-**Test criteria:** Successfully fetches and caches web art for MBID-tagged files without embedded art; fails gracefully (returns `None`, no exception) for untagged files or network errors.
-
-### Slice 1.4: System Detection & Config Management ✅ Merged (PR #4)
-**Goal:** Auto-detect runtime environment; generate appropriate MPD config
-
-**Merged commits:** `2361bfd` docs: update installation guide to general Raspberry Pi walkthrough, `5a9dcf9` docs: update README references to new raspberry-pi-setup.md
-
-**Deliverables completed:**
-- `core/system.py` — `SystemDetector` class
-- `configs/mpd.conf.alsa`, `.pipewire`, `.pulse`, `.null` templates
-- `core/config.py` — `Config` class with schema, detected values + user overrides, load/save to `config.json`
-- `system.py` detects audio backend, display server, distro; generates valid MPD config
-
-**Test criteria:** Correctly identifies backend on Pi OS Bookworm (ALSA or PipeWire), Fedora (PipeWire), Ubuntu (PipeWire); generates valid MPD config that MPD accepts; handles Wayland vs X11 detection.
-
-### Slice 1.5: Tkinter Touch UI — Core Dashboard ✅ Merged (PR #8)
-**Goal:** Minimal touchscreen interface that controls playback
-
-**Merged commits:** `5d57add` fix: address remaining review gaps - idle cleanup, quit test, export CSV, reset flag persistence, `8d9b4e7` fix: address remaining review gaps, `a07ea0e` fix(stats): check save() return value in reset-flag restore branch
-
-**Deliverables completed:**
-- `ui/styles.py` — Touch-friendly theme (48px minimum touch targets, high contrast)
-- `ui/widget.py` — Reusable components: `TouchButton`, `ProgressBar`, `AlbumArtLabel`, `VolumeSlider`, `StatusLabel`
-- `ui/dashboard.py` — Main window with album art, track info, playback controls, volume slider, progress bar, status indicator
-- Background thread polls MPD every 1s, updates UI via `root.after()`
-- Plugin system integration and loading
-
-**Test criteria:** 98 unit tests pass across all test files. Tests cover: MPD connection/resilience, system detection, plugin lifecycle, dashboard `_update_ui` state machine (song start/stop/seek/repeat-one/track change/quitting mid-track/cleanup not called on idle polls), PlayStats SQLite operations (record/queries/retention/CSV export), skip rates, listening time heatmaps, top tracks, recent history.
-
-**Integration test:** Full smoke test — music plays, UI responds, art shows, volume works; survives MPD restart; survives network mount temporary disconnect.
+**Additional pass criteria (from review):**
+- [ ] If MPD socket is unavailable, `connect()` retries with backoff and `get_status()` returns a "disconnected" status gracefully
+- [ ] If MPD restarts mid-session, next status poll triggers reconnect and playback resumes
+- [ ] No uncaught exceptions reach the UI thread during any of the above
 
 ---
 
-## Phase 2: Play Statistics ✅ Complete
+### Slice 1.2: Album Art — Local Extraction Only ✅ Merged (PR #2, `415d248`)
+**Goal:** Extract embedded artwork from FLAC/MP3 files, cache to disk
 
-### Slice 2.1: Database Schema & Event Capture ✅ Merged (PR #6)
+#### Deliverables
+- `core/artwork.py` — `ArtworkCache` class with:
+  - `get_art(file_path)` → returns cached image path or `None`
+  - LRU cache with configurable max size (default 50MB)
+  - Thread-safe: uses `queue.Queue` + background worker
+  - Extracts from: FLAC (VorbisComment pictures), MP3 (ID3v2 APIC), M4A (iTunes artwork)
+
+#### Test Criteria
+```bash
+# 1. Prepare test files
+mkdir -p ~/test_music
+cp /path/to/some.flac ~/test_music/
+cp /path/to/some.mp3 ~/test_music/
+
+# 2. Run test
+python3 -c "
+from core.artwork import ArtworkCache
+cache = ArtworkCache(max_size_mb=10)
+for f in ['~/test_music/some.flac', '~/test_music/some.mp3']:
+    path = cache.get_art(f)
+    print(f'{f}: {path}')
+    if path:
+        import os; print(f'  Size: {os.path.getsize(path)} bytes')
+"
+```
+
+**Pass if:** Returns valid image paths for files with embedded art; returns `None` for files without; cache directory stays under size limit.
+
+---
+
+### Slice 1.3: Album Art — Web Fallback with MBID Resolution ✅ Merged (PR #3, `4bd0970`)
+**Goal:** Fetch cover art from Cover Art Archive when no embedded art exists
+
+#### Deliverables
+- Enhanced `ArtworkCache.get_art()` with fallback chain:
+  1. Embedded art (Slice 1.2)
+  2. Local sidecar (`cover.jpg` / `folder.jpg` in same directory)
+  3. **Cover Art Archive** via MusicBrainz Release ID (MBID)
+     - Extract MBID from file tags (`musicbrainz_releaseid`)
+     - Query `https://coverartarchive.org/release/{MBID}`
+     - Download `thumbnails.small` image
+- All network calls: `timeout=3.5`, custom User-Agent, retry once
+
+#### Test Criteria
+```bash
+# 1. Tag a test FLAC with MBID (using mutagen or Picard)
+# 2. Remove embedded art from test file
+# 3. Run test
+python3 -c "
+from core.artwork import ArtworkCache
+cache = ArtworkCache(max_size_mb=10)
+path = cache.get_art('~/test_music/no_art_but_tagged.flac')
+print('Web fallback result:', path)
+"
+```
+
+**Pass if:** Successfully fetches and caches web art for MBID-tagged files without embedded art; fails gracefully (returns `None`, no exception) for untagged files or network errors.
+
+#### Known issues from CodeRabbit review
+- Web lookups block the caller (~7s per track with no art) — deferred per developer request
+- Art isn't restored after a restart — deferred per developer request
+- The startup-scan check at line 174 of artwork.py can never be true because it compares a string to a Path
+- CodeRabbit's PHASE_DEVELOPMENT_PLAN.md:266 service-user comment is unaddressed: update the "MPD runs as dedicated user" plan entry
+
+#### Known issues from CodeRabbit review (fixed)
+- Size-limit test now exercises eviction correctly (80KB cached with 40KB sidecar files, track 0 evicted)
+- The online fallback has test coverage (the `test_web_fallback_mocked` smoke test in test_artwork.py)
+
+#### Cleanup (non-blocking)
+- `self._last_mbid` is set twice (lines 705 and 710 of artwork.py) and never read
+- The docstring at line 689 says every redirect is validated, but the API request at line 713 still uses plain `urlopen`
+- The `_resolve_mbid` docstring (lines 624-629) says Picard writes `musicbrainz_releaseid` for FLAC; it's actually `musicbrainz_albumid`
+- No test for FLAC embedded art (VorbisComment pictures)
+- No test for M4A embedded art (iTunes artwork atoms)
+- No CI pipeline — would have caught the two parse failures and the failing test earlier in this PR
+- The web fallback test still patches `_is_trusted_host` to always return True, so the allowlist isn't exercised
+- CodeRabbit's service-user comment on line 266: update the "MPD runs as dedicated user" plan entry to match the installation guide's controller service user
+
+---
+
+### Slice 1.4: System Detection & Config Management ✅ Merged (PR #5, `2146ee4`)
+**Goal:** Auto-detect runtime environment; generate appropriate MPD config
+
+#### Deliverables
+- `core/system.py` — `SystemDetector` class:
+  - `detect_audio_backend()` → `'alsa' | 'pipewire' | 'pulse' | 'unknown'`
+  - `detect_display_server()` → `'x11' | 'wayland' | 'unknown'`
+    - **Wayland note**: Checks for `WAYLAND_DISPLAY` env var and presence of `XWayland`; Raspberry Pi OS Bookworm+ defaults to Wayland
+  - `detect_distro()` → `'debian' | 'ubuntu' | 'fedora' | 'arch' | 'alpine' | 'nixos' | 'unknown'`
+  - `get_mpd_config_template()` → path to appropriate `mpd.conf.*` template
+  - `generate_mpd_conf(output_path='/etc/mpd.conf')` — writes MPD config with correct `audio_output` block for detected backend:
+    - ALSA: `audio_output { type "alsa" ... }` with device selection (HDMI vs 3.5mm vs HAT DAC)
+    - PipeWire: `audio_output { type "pipewire" ... }`
+    - PulseAudio: `audio_output { type "pulse" ... }`
+    - Null: `audio_output { type "null" ... }` (headless/testing)
+- `configs/mpd.conf.alsa`, `.pipewire`, `.pulse`, `.null` templates
+- `config.json` schema with detected values + user overrides
+
+#### Technical Addendum (from review): MPD Config Generation
+- **MPD talks to audio hardware directly** — Python never touches ALSA/PipeWire; `core/system.py` generates the `audio_output` block MPD uses
+- Device selection: detect available ALSA devices (`aplay -L`), PipeWire nodes, or user-specified default
+- Config file written to `/etc/mpd.conf` (root-owned), then MPD daemon restarted
+
+#### Test Criteria (Manual)
+```bash
+# Run on target hardware (Pi Zero) and optionally in VMs
+python3 -c "
+from core.system import SystemDetector
+d = SystemDetector()
+print('Audio backend:', d.detect_audio_backend())
+print('Display server:', d.detect_display_server())
+print('Distro:', d.detect_distro())
+print('MPD template:', d.get_mpd_config_template())
+d.generate_mpd_conf('/tmp/test_mpd.conf')
+# Verify: cat /tmp/test_mpd.conf | grep -q 'audio_output'  # should find valid block
+"
+```
+
+**Pass if:** Correctly identifies backend on Pi OS Bookworm (ALSA or PipeWire depending on config), Fedora (PipeWire), Ubuntu (PipeWire); generates valid MPD config that MPD accepts; handles Wayland vs X11 detection for Pi OS Bookworm+ touchscreen edge cases
+
+---
+
+### Slice 1.5: Tkinter Touch UI — Core Dashboard ✅ Merged (PR #8, `e8cf7a8`)
+**Goal:** Minimal touchscreen interface that controls playback
+
+#### Deliverables
+- `ui/styles.py` — Touch-friendly theme (48px minimum touch targets, high contrast)
+- `ui/widget.py` — Reusable components: `TouchButton`, `ProgressBar`, `AlbumArtLabel`
+- `ui/dashboard.py` — Main window with:
+  - Large album art (center)
+  - Track title / artist / album labels
+  - Play/pause, next, previous, stop buttons
+  - Volume slider
+  - Progress bar (tap to seek)
+  - Status indicator (playing/paused/stopped/connecting)
+- Background thread polls MPD every 1s, updates UI via `root.after()`
+
+#### Test Criteria
+```bash
+# On Pi Zero with touchscreen (or desktop with X11)
+python3 main.py
+```
+
+**Manual verification checklist:**
+- [ ] Window opens fullscreen (or configurable size)
+- [ ] Album art displays (or placeholder)
+- [ ] Track info updates when song changes
+- [ ] Play/pause toggles playback
+- [ ] Next/previous changes track
+- [ ] Volume slider changes MPD volume
+- [ ] Progress bar updates in real-time
+- [ ] Tap progress bar seeks to position
+- [ ] UI remains responsive during network hiccups
+- [ ] Memory usage < 50 MB (check with `htop`)
+
+---
+
+### Phase 1 Integration Test
+**Run after all slices complete:**
+```bash
+# Full smoke test
+cd pi-music-player
+python3 main.py &
+sleep 5
+# Verify: music plays, UI responds, art shows, volume works
+# Kill and restart - should reconnect to MPD automatically
+```
+**Pass if:** All above work; survives MPD restart; survives network mount temporary disconnect.
+
+---
+
+## Phase 2: Play Statistics 🚧 In progress
+
+### Slice 2.1: Database Schema & Event Capture ✅ Merged (PR #7, `80adff5`)
 **Goal:** Persistent local database tracking every play event
 
-**Merged commits:** `c2b8ee5` fix: Apply timestamp and fallback fixes, `35bf482` fix(slide-2.2): Bind drag handlers on every stats label, add missing sections, fix retention, `6eacddb` feature(slide-2.2): Stats UI screen + query methods, `3af277d` ui: Add Slice 2.2 Statistics Screen, `9239269` stats: Add Slice 2.2 query methods (playcounts, skip rate, heatmap, history, CSV export)
+#### Deliverables
+- `core/stats.py` — `PlayStats` class with SQLite backend:
+  - Schema:
+    ```sql
+    CREATE TABLE plays (
+        id INTEGER PRIMARY KEY,
+        track_path TEXT NOT NULL,
+        artist TEXT,
+        album TEXT,
+        title TEXT,
+        started_at INTEGER NOT NULL,      -- unix timestamp
+        ended_at INTEGER,                 -- null if currently playing
+        completed BOOLEAN DEFAULT 0,      -- 1 = played to end
+        skipped BOOLEAN DEFAULT 0,        -- 1 = user pressed next
+        duration_ms INTEGER               -- track length
+    );
+    CREATE INDEX idx_artist ON plays(artist);
+    CREATE INDEX idx_album ON plays(album);
+    CREATE INDEX idx_started ON plays(started_at);
+    ```
+  - `record_play_start(track_info)` — called on track change
+  - `record_play_end(completed: bool)` — called on track end/skip
+  - Power-loss resilience *(as built: SQLite WAL mode with a commit per event; the planned 10s background flush thread was not needed)*
 
-**Deliverables completed:**
-- `core/stats.py` — `PlayStats` class with SQLite backend
-- Schema: `plays` table with `track_path`, `artist`, `album`, `title`, `started_at`, `ended_at`, `completed`, `skipped`, `duration_ms`; indexes on `artist`, `album`, `started_at`
-- `record_play_start(track_info)` — called on track change
-- `record_play_end(completed: bool)` — called on track end/skip
-- Background thread flushes every 10s (survives power loss)
-- Query methods: `get_total_plays()`, `get_artist_stats()`, `get_recent_plays()`, `get_artist_playcounts()`, `get_album_playcounts()`, `get_skip_rate()`, `get_listening_time_heatmap()`, `get_recent_history(limit=20)`, `export_csv()`
+#### Test Criteria
+```bash
+python3 -c "
+from core.stats import PlayStats
+stats = PlayStats('/tmp/test_stats.db')
+# Simulate playing a track
+stats.record_play_start({
+    'file': '/music/artist/album/track.flac',
+    'artist': 'Test Artist',
+    'album': 'Test Album',
+    'title': 'Test Track',
+    'duration': 180000
+})
+import time; time.sleep(0.1)
+stats.record_play_end(completed=True)
 
-**Test criteria:** Records survive process restart; queries return correct aggregates; database < 1KB per 100 plays.
+# Query
+for row in stats.get_recent_plays(limit=5):
+    print(row)
+print('Total plays:', stats.get_total_plays())
+print('Artist stats:', stats.get_artist_stats('Test Artist'))
+"
+```
 
-### Slice 2.2: Statistics UI & Insights ✅ Merged (PR #9)
+**Pass if:** Records survive process restart; queries return correct aggregates; database < 1KB per 100 plays.
+
+---
+
+### Slice 2.2: Statistics UI & Insights ✅ Merged (PR #9, `5835b74`)
 **Goal:** Visualize play history in the dashboard
 
-**Merged commits:** `8e16bdd` test(slide-2.2): add missing quit-mid-track and idle-cleanup tests, `5d57add` fix: address remaining review gaps - idle cleanup, quit test, export CSV, reset flag persistence, `a07ea0e` fix(stats): check save() return value in reset-flag restore branch
-
-**Deliverables completed:**
-- New "Stats" screen in dashboard (swipe or button to access)
-- Top Artists (by play count, playtime)
-- Top Albums
-- Most Played Tracks
-- Skip Rate per artist/album (skips / total plays)
-- Listening Time by hour of day / day of week (heatmap)
-- Recent History (last 20 plays with timestamps)
+#### Deliverables
+- New "Stats" screen in dashboard (swipe or button to access):
+  - **Top Artists** (by play count, playtime)
+  - **Top Albums**
+  - **Most Played Tracks**
+  - **Skip Rate** per artist/album (skips / total plays)
+  - **Listening Time** by hour of day / day of week (heatmap)
+  - **Recent History** (last 20 plays with timestamps)
 - Export to CSV button (for personal analysis)
 
-**Test criteria:** 32 unit tests pass (test_slice_2_2.py). All stats views populate correctly; export creates valid CSV; retention cleanup only closes old open rows and prunes by size (not age).
+#### Test Criteria
+```bash
+# Manual: navigate to Stats screen
+# Verify:
+# - Numbers match actual plays
+# - Charts render (text-based is fine for Pi)
+# - Export creates valid CSV
+```
 
-**Integration test:** Play 20+ tracks naturally (mix of complete, skip, restart); check Stats screen — verify all numbers plausible; restart app — verify stats persist; check DB size: `ls -lh play_stats.db` should be < 100KB.
+**Pass if:** All stats views populate correctly; export opens in spreadsheet.
+
+---
+
+### Slice 2.3: Plugin System Hardening 🚧 In progress (PR #10)
+**Goal:** Make the plugin lifecycle reliable before more plugins are built on it
+
+#### Deliverables
+- `PluginManager.shutdown_all()` as an instance method (it was module-level, so `main.py` raised `AttributeError` on every exit)
+- `unload_plugin()` removes the plugin's callbacks from the public hook registry, so reloads don't accumulate stale hooks
+- `tests/test_slice_2_3.py` — load/initialize/shutdown, `shutdown_all`, enable/disable, reload from the recorded source directory, hook dispatch, capability/type queries, `auto_load: false`
+- `docs/development/testing.md` — how to run the suites
+
+#### Test Criteria
+```bash
+python3 tests/test_slice_2_3.py
+python3 -m unittest discover -s tests -p "test_*.py"   # test_slice_1_1.py needs a running MPD
+```
+
+**Pass if:** All suites pass; quitting the app exits cleanly; reloading a plugin leaves exactly one copy of each hook.
+
+---
+
+### Phase 2 Integration Test
+```bash
+# 1. Play 20+ tracks naturally (mix of complete, skip, repeat)
+# 2. Check Stats screen — verify all numbers plausible
+# 3. Restart app — verify stats persist
+# 4. Check DB size: ls -lh play_stats.db  # should be < 100KB
+```
 
 ---
 
@@ -351,30 +527,64 @@ Copy this for each slice:
 ### Slice 3.1: Recommendation Engine Core
 **Goal:** Local-only "fans also played" suggestions
 
-**Planned deliverables:**
-- `plugins/features/recommendations.py` — `RecommendationEngine` class
-- Co-occurrence model: For each artist, which other artists appear in same listening sessions?
-- Session = continuous playback with < 5 min gaps
-- Build artist→artist affinity matrix (SQLite table)
-- `get_similar_artists(artist, limit=10)` → ranked list
-- `get_recommendations_for_current()` → based on current track's artist
-- `get_genre_radio(genre)` → shuffle tracks from same genre
+#### Deliverables
+- `plugins/features/recommendations.py` — `RecommendationEngine` class:
+  - **Co-occurrence model:** For each artist, which other artists appear in same listening sessions?
+  - Session = continuous playback with < 5 min gaps
+  - Build artist→artist affinity matrix (SQLite table)
+  - `get_similar_artists(artist, limit=10)` → ranked list
+  - `get_recommendations_for_current()` → based on current track's artist
+  - `get_genre_radio(genre)` → shuffle tracks from same genre
 - Runs in background, updates model nightly or on demand
 
-**Test criteria:** Returns plausible suggestions after ~50 plays; runs in < 200ms on Pi Zero; no network calls.
+#### Test Criteria
+```bash
+python3 -c "
+from core.stats import PlayStats
+from plugins.features.recommendations import RecommendationEngine
+stats = PlayStats('play_stats.db')
+engine = RecommendationEngine(stats)
+# After some listening history exists
+print('Similar to Radiohead:', engine.get_similar_artists('Radiohead'))
+print('Recommendations now:', engine.get_recommendations_for_current())
+"
+```
+
+**Pass if:** Returns plausible suggestions after ~50 plays; runs in < 200ms on Pi Zero; no network calls.
+
+---
 
 ### Slice 3.2: Discovery Features in UI
 **Goal:** Surface recommendations in the dashboard
 
-**Planned deliverables:**
-- New "Discover" screen
-- **"Play Similar"** button on Now Playing → queues similar tracks
-- **"Genre Radio"** — pick genre, plays endless shuffle
-- **"Revisit"** — albums you haven't played in 30+ days
-- **"New to You"** — artists in library but never played (via MPD `list albumartist`)
+#### Deliverables
+- New "Discover" screen:
+  - **"Play Similar"** button on Now Playing → queues similar tracks
+  - **"Genre Radio"** — pick genre, plays endless shuffle
+  - **"Revisit"** — albums you haven't played in 30+ days
+  - **"New to You"** — artists in library but never played (via MPD `list albumartist`)
 - "Add to Queue" / "Play Next" actions
 
-**Test criteria:** All features work; queue manipulation doesn't break playback.
+#### Test Criteria
+```bash
+# Manual on device:
+# - Play a track
+# - Tap "Play Similar" → queue populates with related tracks
+# - Tap "Genre Radio" → plays continuous genre shuffle
+# - "Revisit" shows stale albums
+```
+
+**Pass if:** All features work; queue manipulation doesn't break playback.
+
+---
+
+### Phase 3 Integration Test
+```bash
+# 1. Build library with 500+ tracks across genres
+# 2. Listen naturally for a week
+# 3. Verify recommendations feel relevant
+# 4. Check CPU/memory during recommendation refresh (should be negligible)
+```
 
 ---
 
@@ -383,25 +593,59 @@ Copy this for each slice:
 ### Slice 4.1: Local Web API
 **Goal:** REST API for remote control
 
-**Planned deliverables:**
-- `plugins/remote.py` — `RemoteServer` (runs on `localhost:8080`)
-- Endpoints: `GET /api/status`, `GET /api/queue`, `POST /api/control`, `GET /api/art`, `GET /api/library`, `POST /api/queue/add`
-- Token auth (random token on startup, printed to console + QR code)
-- CORS enabled for LAN access
+#### Deliverables
+- `plugins/remote.py` — `RemoteServer` (runs on `localhost:8080`):
+  - Endpoints:
+    - `GET /api/status` — current song, position, volume, state
+    - `GET /api/queue` — current playlist
+    - `POST /api/control` — `{action: play|pause|next|prev|stop|volume|seek}`
+    - `GET /api/art` — current album art (serves cached image)
+    - `GET /api/library` — browse artists/albums (paginated)
+    - `POST /api/queue/add` — add track/album to queue
+  - Token auth (random token on startup, printed to console + QR code)
+  - CORS enabled for LAN access
 
-**Test criteria:** All endpoints respond < 100ms; controls actually affect playback; token required.
+#### Test Criteria
+```bash
+# Start app, note token from console
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/status
+curl -X POST -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "next"}' \
+  http://localhost:8080/api/control
+```
+
+**Pass if:** All endpoints respond < 100ms; controls actually affect playback; token required.
+
+---
 
 ### Slice 4.2: Web Dashboard (Optional)
 **Goal:** Phone-friendly web UI
 
-**Planned deliverables:**
-- Static HTML/JS served from `/web/` directory
-- Now playing with album art
-- Playback controls
-- Queue view with drag-to-reorder
-- Library browser
-- Volume slider
+#### Deliverables
+- Static HTML/JS served from `/web/` directory:
+  - Now playing with album art
+  - Playback controls
+  - Queue view with drag-to-reorder
+  - Library browser
+  - Volume slider
 - Works on mobile Safari/Chrome without app install
+
+#### Test Criteria
+```bash
+# On phone browser: http://<pi-ip>:8080
+# Verify: all controls work, art loads, queue reordering persists
+```
+
+---
+
+### Phase 4 Integration Test
+```bash
+# 1. Start player on Pi
+# 2. Open web UI on phone
+# 3. Control playback entirely from phone for 30 min
+# 4. Verify: no UI lag, art loads, queue edits work
+```
 
 ---
 
@@ -452,46 +696,6 @@ pyinstaller --onefile --name pi-music-player main.py
 
 ---
 
-## Slice Tracking Template (Docs-Heavy)
-
-Copy this for each slice:
-
-```markdown
-## Slice X.Y: [Name]
-
-**Target Date:** YYYY-MM-DD
-**Estimated Effort:** N days
-
-### Code Deliverables
-- [ ] File/module: description
-- [ ] File/module: description
-
-### Documentation Deliverables
-- [ ] Docs: Feature explanation (GitHub `docs/features/[[name]].md`)
-- [ ] Docs: Setup/guide (GitHub `docs/[[category]]/[[name]].md`)
-- [ ] Docs: Testing/use examples (GitHub `docs/usage/[[name]].md`)
-- [ ] README: Update section for completed slice (GitHub `README.md`)
-
-### Test Plan
-```bash
-# Exact commands to verify
-```
-
-### Acceptance Criteria
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Dependencies
-- Requires: Slice X.Y-1 complete
-- Blocks: Slice X.Y+1
-
-### Notes / Risks
-- Risk: ...
-- Mitigation: ...
-```
-
----
-
 ## Recommended Order of Execution
 
 | Order | Slice | Why |
@@ -504,6 +708,7 @@ Copy this for each slice:
 | 6 | B1 | Get binary working early |
 | 7 | 2.1 | Stats need real usage data |
 | 8 | 2.2 | See your data |
+| 8a | 2.3 | Harden plugins before building more on them |
 | 9 | 3.1 | Recommendations need stats |
 | 10 | 3.2 | Surface recommendations |
 | 11 | 4.1 | Remote is force multiplier for testing |
