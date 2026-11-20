@@ -840,12 +840,18 @@ class PlayStats:
                         )
                         config_owner.set("stats.reset", True)
                         try:
-                            config_owner.save()
+                            saved = config_owner.save()
                         except Exception as e:
-                            # Even the restore write failed; leave the in-memory
-                            # flag True so a later save still persists the reset.
+                            saved = False
                             logger.warning(
                                 "Failed to restore stats.reset=true for retry: %s", e
+                            )
+                        if not saved:
+                            # The restore write failed (exception or False return).
+                            # Leave the in-memory flag True so a later save still
+                            # persists the reset.
+                            logger.warning(
+                                "Failed to persist stats.reset=true for retry"
                             )
 
         return instance
