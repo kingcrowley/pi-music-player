@@ -1,5 +1,5 @@
 """
-Low-Resource Linux Music Player — Main Entry Point (Slice 1.5)
+Low-Resource Linux Music Player — Main Entry Point
 
 Bootstrap: creates MusicPlayer, Config, ArtworkCache and PluginManager,
 then launches the Tkinter Dashboard.
@@ -69,10 +69,10 @@ def _resolve_song_path(song_file: str, music_dir: str) -> str:
 
 
 def main() -> int:
-    """Entry point for Slice 1.5 — Tkinter Touch UI + Plugin System."""
+    """Entry point for the Low-Resource Linux Music Player."""
     print("=" * 50)
     print("Low-Resource Linux Music Player")
-    print("Slice 1.5: Tkinter Touch UI & Plugin System")
+    print("Phase 1/2 complete — MPD playback, stats UI, plugin system")
     print("=" * 50)
 
     # Load configuration

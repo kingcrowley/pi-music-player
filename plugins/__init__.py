@@ -506,8 +506,7 @@ class PluginManager:
             })
         return result
 
-
-def shutdown_all(self) -> None:
+    def shutdown_all(self) -> None:
         """Shutdown and unload all plugins.
 
         Calls shutdown() on each loaded plugin and removes their hook
