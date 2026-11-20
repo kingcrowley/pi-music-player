@@ -355,8 +355,10 @@ class PluginManager:
         except Exception as e:
             logger.warning("Error shutting down plugin %s: %s", plugin_id, e)
 
-        # Remove plugin's hook callbacks
-        self._plugin_hooks.pop(plugin_id, None)
+        # Remove plugin's hook callbacks from the public registry
+        for event_name, callbacks in self._plugin_hooks.pop(plugin_id, {}).items():
+            for callback in callbacks:
+                self.unregister_hook(event_name, callback)
 
         del self.plugins[plugin_id]
         del self.plugins_metadata[plugin_id]
@@ -427,6 +429,11 @@ class PluginManager:
         """Trigger all callbacks registered for an event.
 
         Only triggers hooks for plugins that are currently enabled.
+        Note: only callbacks registered via plugin.register_hook() (which
+        stores them in _plugin_hooks) are dispatched. Callbacks added
+        directly through PluginManager.register_hook() go into self.hooks
+        but are NOT invoked by trigger_hook. Use plugin.register_hook() for
+        event dispatch.
 
         Iterates over a snapshot of _plugin_hooks so that if a callback
         calls unload_plugin() during dispatch, the dictionary size change
@@ -506,8 +513,7 @@ class PluginManager:
             })
         return result
 
-
-def shutdown_all(self) -> None:
+    def shutdown_all(self) -> None:
         """Shutdown and unload all plugins.
 
         Calls shutdown() on each loaded plugin and removes their hook

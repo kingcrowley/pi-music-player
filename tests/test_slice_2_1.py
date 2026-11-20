@@ -23,11 +23,16 @@ RESULTS = []
 
 
 def check(name: str, condition: bool, detail: str = ""):
-    """Record a test result."""
+    """Record a test result; raise immediately if the check fails.
+
+    Raises so the suite is green only when every check genuinely holds,
+    matching the failure behavior of the Slice 2.2 helper.
+    """
     status = "PASS" if condition else "FAIL"
     mark = "PASS" if condition else "FAIL"
     RESULTS.append((status, name))
-    print(f"  [{mark}] {status}: {name}" + (f" - {detail}" if detail else ""))
+    if not condition:
+        raise AssertionError(f"CHECK FAILED: {name}" + (f" - {detail}" if detail else ""))
 
 
 class Slice21TestCase(unittest.TestCase):

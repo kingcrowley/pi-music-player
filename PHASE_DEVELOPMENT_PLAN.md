@@ -20,137 +20,6 @@ docs/
 ├── installation/
 │   ├── README.md                     # Installation overview
 │   ├── raspberry-pi-setup.md         # Complete Raspberry Pi walkthrough (all models)
-│   ├── cross-distro.md              # Debian, Fedora, Arch, Alpine, NixOS
-│   └── docker.md                     # Docker deployment (ARM64)
-├── configuration/
-│   ├── README.md                     # Config overview
-│   ├── mpd-setup.md                  # MPD daemon configuration per backend
-│   └── network-mounts.md             # SMB/NFS fstab templates
-├── usage/
-│   ├── dashboard-guide.md            # UI feature reference
-│   ├── keyboard-shortcuts.md         # All keybindings
-│   └── touch-gestures.md            # Touchscreen interaction guide
-├── features/
-│   ├── play-statistics.md            # How stats work, schema reference
-│   ├── recommendations.md            # Algorithm explanation
-│   └── remote-control.md            # Web API + web dashboard docs
-├── troubleshooting/
-│   ├── README.md                     # Common issues
-│   ├── audio-backend.md              # ALSA/PipeWire/Pulse issues
-│   ├── network-mounts.md             # SMB/NFS mount failures
-│   └── touch-screen.md               # Calibration, driver issues
-├── development/
-│   ├── README.md                     # Contributor guide
-│   ├── slice-plan.md                 # This document
-│   ├── testing.md                    # How to run tests
-│   └── release-process.md           # PyInstaller builds, GitHub release workflow
-└── assets/
-    ├── screenshots/                  # Full-res screenshots for README
-    └── diagrams/                     # Architecture diagrams (ASCII + SVG)
-```
-
-### GitHub-Specific Documentation Workflow
-- **`docs/` committed directly to repo** — rendered natively via GitHub's Markdown preview
-- **`/docs` folder → GitHub Pages** enabled in repo settings (automatic HTTPS hosting)
-- **Each slice updates relevant doc files** — tracked in the slice checklist
-- **README.md updated at Phase 1, Phase 4 completion** for major feature milestones
-- **GitHub releases tagged** with changelog for each phase
-
-### Documentation Standards
-| Doc Type | Target Audience | Format | Updated By |
-|----------|----------------|--------|------------|
-| README.md | Everyone | Markdown | Slice 1.5 / Phase 1 done |
-| Installation guides | New users | Markdown + bash blocks | Slice 1.4 / B2 |
-| Feature docs | Users | Markdown | Feature slice + owner |
-| Troubleshooting | All users | Question/Answer (H2 headings) | As bugs are found |
-| Contributor guide | Developers | Markdown | Slice B3 |
-| Plugin API | Plugin developers | Markdown | Plugin core |
-
----
-
-## Plugin Development Phases
-
-The plugin system is integrated across multiple slices. Plugin development interleave with core features:
-
-### Plugin Phases Overview
-
-| Phase | Slice | What's Added |
-|-------|-------|-------------|
-| **P1** | 1.5 | Plugin system foundation — base class, PluginManager, core hooks |
-| **P2** | 2.1 | First built-in plugins: ALSA audio backend, Statistics |
-| **P3** | 3.1 | Plugin ecosystem: recommendations, remote control, more |
-| **P4** | 4.1 | Plugin marketplace system — discovery, loading, configuration |
-| **P5** | 5.x | Community plugins — sleep timer, equalizer, etc. |
-
-### Plugin Phase Details
-
-#### P1: Plugin System Foundation (Slice 1.5)
-- MusicPlayerPlugin base class
-- PluginManager discovery and loading
-- Core event hooks (`on_song_change`, `on_playback_state`, etc.)
-- Plugin manifest system (`config.json`)
-- Plugin lifecycle (initialize, shutdown, get_capabilities)
-
-**Deliverables:**
-- `plugins/__init__.py` — PluginManager class
-- `core/plugin_base.py` — MusicPlayerPlugin abstract base
-- Minimal built-in plugin for testing
-
-#### P2: Built-in Plugins (Slices 2.1-2.3)
-- ALSA audio backend plugin
-- Statistics feature plugin
-- Remote control feature plugin
-- Configuration system integration
-
-**Deliverables:**
-- `plugins/audio-backends/alsa/alsa.py` — ALSA audio backend
-- `core/stats.py` — Play statistics module
-- Plugin settings integration
-
-#### P3: Plugin Ecosystem (Slices 3.1-3.3)
-- Recommendations plugin
-- Remote control web API plugin
-- Equalizer plugin (basic)
-- Plugin metadata browsing
-
-**Deliverables:**
-- `plugins/features/recommendations.py` — Co-occurrence model
-- `plugins/remote.py` — Web API on localhost:8080
-- `plugins/features/equalizer.py` — Basic equalizer
-
-#### P4: Plugin Marketplace (Slice 4.1)
-- Plugin discovery system
-- Plugin loading/unloading at runtime
-- Plugin configuration persistence
-- Plugin lifecycle management
-
-**Deliverables:**
-- Runtime plugin loader
-- Plugin settings persistence in config.json
-- Plugin enable/disable from UI
-
-#### P5: Community Plugins (Slices 5.x)
-- Sleep timer plugin
-- Equalizer plugin (advanced)
-- Bluetooth control plugin
-- Any community-contributed plugins
-
-**Deliverables:**
-- Sleep timer plugin
-- Advanced equalizer
-- Bluetooth integration
-- Plugin README template
-
----
-
-## GitHub Documentation Structure
-
-```
-docs/
-├── README.md                         # Project overview, quickstart
-├── installation/
-│   ├── README.md                     # Installation overview
-│   ├── raspberry-pi-setup.md         # Complete Raspberry Pi walkthrough (all models)
 │   ├── cross-distro.md              # Debian, Ubuntu, Fedora, Arch, Alpine, NixOS
 │   └── docker.md                     # Docker deployment (ARM64)
 ├── configuration/
@@ -167,6 +36,7 @@ docs/
 │   └── remote-control.md             # Web API and remote dashboard
 ├── development/
 │   ├── README.md                     # Contributor guide
+│   ├── slice-plan.md                 # This document
 │   ├── plugin-api.md                 # Plugin API specification
 │   ├── plugin-developer-guide.md     # Plugin development guide
 │   ├── testing.md                    # How to run tests
@@ -182,6 +52,7 @@ docs/
 ```
 
 ### GitHub-Specific Documentation Workflow
+
 - **`docs/` committed directly to repo** — rendered natively via GitHub's Markdown preview
 - **`/docs` folder → GitHub Pages** enabled in repo settings (automatic HTTPS hosting)
 - **Each slice updates relevant doc files** — tracked in the slice checklist
@@ -190,6 +61,7 @@ docs/
 - **Plugin docs separate** in `docs/development/` for plugin developers
 
 ### Documentation Standards
+
 | Doc Type | Target Audience | Format | Updated By |
 |----------|----------------|--------|------------|
 | README.md | Everyone | Markdown | Slice 1.5 / Phase 1 done |
@@ -198,6 +70,77 @@ docs/
 | Troubleshooting | All users | Question/Answer (H2 headings) | As bugs are found |
 | Contributor guide | Developers | Markdown | Slice B3 |
 | Plugin API | Plugin developers | Markdown | Plugin core |
+
+---
+
+## Plugin Development Phases
+
+The plugin system is integrated across multiple slices. Plugin development interleave with core features:
+
+| Phase | Slice | What's Added |
+|-------|-------|-------------|
+| **P1** | 1.5 | Plugin system foundation — base class, PluginManager, core hooks |
+| **P2** | 2.1 | First built-in plugins: ALSA audio backend, Statistics |
+| **P3** | 3.1 | Plugin ecosystem: recommendations, remote control, more |
+| **P4** | 4.1 | Plugin marketplace system — discovery, loading, configuration |
+| **P5** | 5.x | Community plugins — sleep timer, equalizer, etc. |
+
+### P1: Plugin System Foundation (Slice 1.5)
+- MusicPlayerPlugin base class
+- PluginManager discovery and loading
+- Core event hooks (`on_song_change`, `on_playback_state`, etc.)
+- Plugin manifest system (`config.json`)
+- Plugin lifecycle (initialize, shutdown, get_capabilities)
+
+**Deliverables:**
+- `plugins/__init__.py` — PluginManager class
+- `core/plugin_base.py` — MusicPlayerPlugin abstract base
+- Minimal built-in plugin for testing
+
+### P2: Built-in Plugins (Slices 2.1-2.3)
+- ALSA audio backend plugin
+- Statistics feature plugin
+- Remote control feature plugin
+- Configuration system integration
+
+**Deliverables:**
+- `plugins/audio-backends/alsa/alsa.py` — ALSA audio backend
+- `core/stats.py` — Play statistics module
+- Plugin settings integration
+
+### P3: Plugin Ecosystem (Slices 3.1-3.3)
+- Recommendations plugin
+- Remote control web API plugin
+- Equalizer plugin (basic)
+- Plugin metadata browsing
+
+**Deliverables:**
+- `plugins/features/recommendations.py` — Co-occurrence model
+- `plugins/remote.py` — Web API on localhost:8080
+- `plugins/features/equalizer.py` — Basic equalizer
+
+### P4: Plugin Marketplace (Slice 4.1)
+- Plugin discovery system
+- Plugin loading/unloading at runtime
+- Plugin configuration persistence
+- Plugin lifecycle management
+
+**Deliverables:**
+- Runtime plugin loader
+- Plugin settings persistence in config.json
+- Plugin enable/disable from UI
+
+### P5: Community Plugins (Slices 5.x)
+- Sleep timer plugin
+- Equalizer plugin (advanced)
+- Bluetooth control plugin
+- Any community-contributed plugins
+
+**Deliverables:**
+- Sleep timer plugin
+- Advanced equalizer
+- Bluetooth integration
+- Plugin README template
 
 ---
 
@@ -212,6 +155,7 @@ Copy this for each slice:
 **Estimated Effort:** N days
 
 ### Code Deliverables
+- [ ] File/module: description
 - [ ] File/module: description
 
 ### Documentation Deliverables
@@ -240,13 +184,9 @@ Copy this for each slice:
 
 ---
 
-## Phase 1: Core Player (Foundation)
+## Phase 1: Core Player (Foundation) ✅ Complete
 
----
-
-## Phase 1: Core Player (Foundation)
-
-### Slice 1.1: MPD Connection & Basic Controls
+### Slice 1.1: MPD Connection & Basic Controls ✅ Merged (PR #1, `cdbbca8`)
 **Goal:** Reliable MPD communication with automatic reconnection
 
 #### Deliverables
@@ -264,26 +204,6 @@ Copy this for each slice:
 - **Status polling**: `get_status()` is called from background thread; safe because it never touches Tkinter
 - **MPD socket lifecycle**: Ensure systemd service file declares `After=mpd.service network.target` so MPD socket is ready before UI starts
 - **MPD runs as dedicated user**: Both MPD and the Python controller run as unprivileged `player` user
-
-#### Known issues from CodeRabbit review
-- Web lookups block the caller (~7s per track with no art) — deferred per developer request
-- Art isn't restored after a restart — deferred per developer request
-- The startup-scan check at line 174 of artwork.py can never be true because it compares a string to a Path
-- CodeRabbit's PHASE_DEVELOPMENT_PLAN.md:266 service-user comment is unaddressed: update the "MPD runs as dedicated user" plan entry
-
-#### Known issues from CodeRabbit review (fixed)
-- Size-limit test now exercises eviction correctly (80KB cached with 40KB sidecar files, track 0 evicted)
-- The online fallback has test coverage (the `test_web_fallback_mocked` smoke test in test_artwork.py)
-
-#### Cleanup (non-blocking)
-- `self._last_mbid` is set twice (lines 705 and 710 of artwork.py) and never read
-- The docstring at line 689 says every redirect is validated, but the API request at line 713 still uses plain `urlopen`
-- The `_resolve_mbid` docstring (lines 624-629) says Picard writes `musicbrainz_releaseid` for FLAC; it's actually `musicbrainz_albumid`
-- No test for FLAC embedded art (VorbisComment pictures)
-- No test for M4A embedded art (iTunes artwork atoms)
-- No CI pipeline — would have caught the two parse failures and the failing test earlier in this PR
-- The web fallback test still patches `_is_trusted_host` to always return True, so the allowlist isn't exercised
-- CodeRabbit's service-user comment on line 266: update the "MPD runs as dedicated user" plan entry to match the installation guide's controller service user
 
 #### Test Criteria (Manual)
 ```bash
@@ -314,33 +234,9 @@ print('Volume:', p.get_status()['volume'])
 - [ ] If MPD restarts mid-session, next status poll triggers reconnect and playback resumes
 - [ ] No uncaught exceptions reach the UI thread during any of the above
 
-#### Test Criteria (Manual)
-```bash
-# 1. Start MPD with test music
-mpd --stdout --no-daemon  # in separate terminal
-
-# 2. Run test script
-python3 -c "
-from core.player import MusicPlayer
-p = MusicPlayer()
-print('Connected:', p.client is not None)
-print('Status:', p.get_status())
-print('Current song:', p.get_current_song())
-p.toggle_play()
-import time; time.sleep(2)
-print('After play:', p.get_status()['state'])
-p.next()
-print('Next song:', p.get_current_song())
-p.set_volume(50)
-print('Volume:', p.get_status()['volume'])
-"
-```
-
-**Pass if:** All commands execute without exception, state changes visible in MPD output.
-
 ---
 
-### Slice 1.2: Album Art — Local Extraction Only
+### Slice 1.2: Album Art — Local Extraction Only ✅ Merged (PR #2, `415d248`)
 **Goal:** Extract embedded artwork from FLAC/MP3 files, cache to disk
 
 #### Deliverables
@@ -373,7 +269,7 @@ for f in ['~/test_music/some.flac', '~/test_music/some.mp3']:
 
 ---
 
-### Slice 1.3: Album Art — Web Fallback with MBID Resolution
+### Slice 1.3: Album Art — Web Fallback with MBID Resolution ✅ Merged (PR #3, `4bd0970`)
 **Goal:** Fetch cover art from Cover Art Archive when no embedded art exists
 
 #### Deliverables
@@ -401,9 +297,29 @@ print('Web fallback result:', path)
 
 **Pass if:** Successfully fetches and caches web art for MBID-tagged files without embedded art; fails gracefully (returns `None`, no exception) for untagged files or network errors.
 
+#### Known issues from CodeRabbit review
+- Web lookups block the caller (~7s per track with no art) — deferred per developer request
+- Art isn't restored after a restart — deferred per developer request
+- The startup-scan check at line 174 of artwork.py can never be true because it compares a string to a Path
+- CodeRabbit's PHASE_DEVELOPMENT_PLAN.md:266 service-user comment is unaddressed: update the "MPD runs as dedicated user" plan entry
+
+#### Known issues from CodeRabbit review (fixed)
+- Size-limit test now exercises eviction correctly (80KB cached with 40KB sidecar files, track 0 evicted)
+- The online fallback has test coverage (the `test_web_fallback_mocked` smoke test in test_artwork.py)
+
+#### Cleanup (non-blocking)
+- `self._last_mbid` is set twice (lines 705 and 710 of artwork.py) and never read
+- The docstring at line 689 says every redirect is validated, but the API request at line 713 still uses plain `urlopen`
+- The `_resolve_mbid` docstring (lines 624-629) says Picard writes `musicbrainz_releaseid` for FLAC; it's actually `musicbrainz_albumid`
+- No test for FLAC embedded art (VorbisComment pictures)
+- No test for M4A embedded art (iTunes artwork atoms)
+- No CI pipeline — would have caught the two parse failures and the failing test earlier in this PR
+- The web fallback test still patches `_is_trusted_host` to always return True, so the allowlist isn't exercised
+- CodeRabbit's service-user comment on line 266: update the "MPD runs as dedicated user" plan entry to match the installation guide's controller service user
+
 ---
 
-### Slice 1.4: System Detection & Config Management
+### Slice 1.4: System Detection & Config Management ✅ Merged (PR #5, `2146ee4`)
 **Goal:** Auto-detect runtime environment; generate appropriate MPD config
 
 #### Deliverables
@@ -443,24 +359,9 @@ d.generate_mpd_conf('/tmp/test_mpd.conf')
 
 **Pass if:** Correctly identifies backend on Pi OS Bookworm (ALSA or PipeWire depending on config), Fedora (PipeWire), Ubuntu (PipeWire); generates valid MPD config that MPD accepts; handles Wayland vs X11 detection for Pi OS Bookworm+ touchscreen edge cases
 
-#### Test Criteria
-```bash
-# Run on target hardware (Pi Zero) and optionally in VMs
-python3 -c "
-from core.system import SystemDetector
-d = SystemDetector()
-print('Audio backend:', d.detect_audio_backend())
-print('Display server:', d.detect_display_server())
-print('Distro:', d.detect_distro())
-print('MPD template:', d.get_mpd_config_template())
-"
-```
-
-**Pass if:** Correctly identifies backend on Pi OS (ALSA), Fedora (PipeWire), Ubuntu (PipeWire); generates valid MPD config that MPD accepts.
-
 ---
 
-### Slice 1.5: Tkinter Touch UI — Core Dashboard
+### Slice 1.5: Tkinter Touch UI — Core Dashboard ✅ Merged (PR #8, `e8cf7a8`)
 **Goal:** Minimal touchscreen interface that controls playback
 
 #### Deliverables
@@ -509,9 +410,9 @@ sleep 5
 
 ---
 
-## Phase 2: Play Statistics
+## Phase 2: Play Statistics 🚧 In progress
 
-### Slice 2.1: Database Schema & Event Capture
+### Slice 2.1: Database Schema & Event Capture ✅ Merged (PR #7, `80adff5`)
 **Goal:** Persistent local database tracking every play event
 
 #### Deliverables
@@ -536,7 +437,7 @@ sleep 5
     ```
   - `record_play_start(track_info)` — called on track change
   - `record_play_end(completed: bool)` — called on track end/skip
-  - Background thread flushes every 10s (survives power loss)
+  - Power-loss resilience *(as built: SQLite WAL mode with a commit per event; the planned 10s background flush thread was not needed)*
 
 #### Test Criteria
 ```bash
@@ -566,7 +467,7 @@ print('Artist stats:', stats.get_artist_stats('Test Artist'))
 
 ---
 
-### Slice 2.2: Statistics UI & Insights
+### Slice 2.2: Statistics UI & Insights ✅ Merged (PR #9, `5835b74`)
 **Goal:** Visualize play history in the dashboard
 
 #### Deliverables
@@ -592,6 +493,25 @@ print('Artist stats:', stats.get_artist_stats('Test Artist'))
 
 ---
 
+### Slice 2.3: Plugin System Hardening 🚧 In progress (PR #10)
+**Goal:** Make the plugin lifecycle reliable before more plugins are built on it
+
+#### Deliverables
+- `PluginManager.shutdown_all()` as an instance method (it was module-level, so `main.py` raised `AttributeError` on every exit)
+- `unload_plugin()` removes the plugin's callbacks from the public hook registry, so reloads don't accumulate stale hooks
+- `tests/test_slice_2_3.py` — load/initialize/shutdown, `shutdown_all`, enable/disable, reload from the recorded source directory, hook dispatch, capability/type queries, `auto_load: false`
+- `docs/development/testing.md` — how to run the suites
+
+#### Test Criteria
+```bash
+python3 tests/test_slice_2_3.py
+python3 -m unittest discover -s tests -p "test_*.py"   # test_slice_1_1.py needs a running MPD
+```
+
+**Pass if:** All suites pass; quitting the app exits cleanly; reloading a plugin leaves exactly one copy of each hook.
+
+---
+
 ### Phase 2 Integration Test
 ```bash
 # 1. Play 20+ tracks naturally (mix of complete, skip, repeat)
@@ -608,7 +528,7 @@ print('Artist stats:', stats.get_artist_stats('Test Artist'))
 **Goal:** Local-only "fans also played" suggestions
 
 #### Deliverables
-- `plugins/recommendations.py` — `RecommendationEngine` class:
+- `plugins/features/recommendations.py` — `RecommendationEngine` class:
   - **Co-occurrence model:** For each artist, which other artists appear in same listening sessions?
   - Session = continuous playback with < 5 min gaps
   - Build artist→artist affinity matrix (SQLite table)
@@ -621,7 +541,7 @@ print('Artist stats:', stats.get_artist_stats('Test Artist'))
 ```bash
 python3 -c "
 from core.stats import PlayStats
-from plugins.recommendations import RecommendationEngine
+from plugins.features.recommendations import RecommendationEngine
 stats = PlayStats('play_stats.db')
 engine = RecommendationEngine(stats)
 # After some listening history exists
@@ -776,46 +696,6 @@ pyinstaller --onefile --name pi-music-player main.py
 
 ---
 
-## Slice Tracking Template (Docs-Heavy)
-
-Copy this for each slice:
-
-```markdown
-## Slice X.Y: [Name]
-
-**Target Date:** YYYY-MM-DD
-**Estimated Effort:** N days
-
-### Code Deliverables
-- [ ] File/module: description
-- [ ] File/module: description
-
-### Documentation Deliverables
-- [ ] Docs: Feature explanation (GitHub `docs/features/[[name]].md`)
-- [ ] Docs: Setup/guide (GitHub `docs/[[category]]/[[name]].md`)
-- [ ] Docs: Testing/use examples (GitHub `docs/usage/[[name]].md`)
-- [ ] README: Update section for completed slice (GitHub `README.md`)
-
-### Test Plan
-```bash
-# Exact commands to verify
-```
-
-### Acceptance Criteria
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Dependencies
-- Requires: Slice X.Y-1 complete
-- Blocks: Slice X.Y+1
-
-### Notes / Risks
-- Risk: ...
-- Mitigation: ...
-```
-
----
-
 ## Recommended Order of Execution
 
 | Order | Slice | Why |
@@ -828,6 +708,7 @@ Copy this for each slice:
 | 6 | B1 | Get binary working early |
 | 7 | 2.1 | Stats need real usage data |
 | 8 | 2.2 | See your data |
+| 8a | 2.3 | Harden plugins before building more on them |
 | 9 | 3.1 | Recommendations need stats |
 | 10 | 3.2 | Surface recommendations |
 | 11 | 4.1 | Remote is force multiplier for testing |
