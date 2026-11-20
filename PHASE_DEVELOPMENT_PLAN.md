@@ -537,17 +537,23 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
 - [ ] `plugins/recommendations/config.json` — Manifest for the first built-in
   plugin. Fields: `plugin_id: "recommendations"`, `name`, `version`,
   `type: "feature"`, `capabilities: ["recommendations"]`, `auto_load: true`,
-  plus `settings_schema` holding `stats.db_path` (default
-  `PlayStats.DEFAULT_DB_PATH`) and `recommendations.session_gap_seconds`
-  (default 300). The loader only scans one level under `plugins/`
-  (`plugins/__init__.py:81`), so the directory is `plugins/recommendations/`.
+  plus `settings` holding `stats.db_path` (default `PlayStats.DEFAULT_DB_PATH`),
+  `recommendations.session_gap_seconds` (default 300), and
+  `recommendations.scan_library_on_startup` (default `true`). The manifest's
+  `settings_schema` describes the JSON-schema validation for these keys, while
+  `settings` holds their actual values — these are separate concerns. The
+  loader only scans one level under `plugins/` (`plugins/__init__.py:81`), so
+  the directory is `plugins/recommendations/`.
 
 - [ ] `plugins/recommendations/recommendations.py` — `RecommendationEngine`
   extending `MusicPlayerPlugin`. Constructor is `__init__(self, config)` to
   match the base class and the manager's `plugin_class(manifest.data)` call
   (`plugins/__init__.py:161`); the engine reads its database path from
-  `config["stats"]["db_path"]` (falling back to `PlayStats.DEFAULT_DB_PATH`)
-  and `session_gap_seconds` from `config["recommendations"]["session_gap_seconds"]`.
+  `config["settings"]["stats.db_path"]` (falling back to
+  `PlayStats.DEFAULT_DB_PATH`), `session_gap_seconds` from
+  `config["settings"]["recommendations.session_gap_seconds"]`, and
+  `scan_library_on_startup` from
+  `config["settings"]["recommendations.scan_library_on_startup"]`.
 
   Public API:
   - `get_similar_artists(artist, limit=10)` — returns co-occurring artists
@@ -559,15 +565,20 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
     `artist` (tracked by the engine) and the co-occurrence matrix.
   - `get_genre_radio(genre)` — returns a shuffled list of track paths from
     `album_songs` whose `genre` matches; `[]` when `album_songs` is empty.
-  - `get_revisit_candidates(days=30)` — album paths not played in the last
-    `days`, excluding recently played albums.
+  - `get_revisit_candidates(days=30)` — returns one track path per album that
+    has not been played in the last `days` (one representative track path per
+    album from `album_songs`), excluding recently played albums.
   - `get_new_to_you()` — artists from the library (`listallinfo`) absent from
     `play_stats.db`.
-  - `initialize(self, core)` — stores `core`, registers hooks, opens the
-    database, and starts a background rebuild when needed. Returns `True`.
-  - `shutdown(self)` — clears in-memory session slots and closes its database
-    connection. It does **not** re-persist the matrix (it lives in SQLite) and
-    does **not** unregister hooks (`unload_plugin()` already does that).
+  - `initialize(self, core)` — stores `core`, registers hooks, opens its own
+    database connection (with `check_same_thread=False` like `PlayStats`),
+    starts a background daemon thread for the library scan and/or rebuild.
+    Returns `True`.
+  - `shutdown(self)` — signals the background thread to stop via a
+    `threading.Event`, waits for it to finish (`thread.join()`), then closes its
+    database connection. It does **not** re-persist the matrix (it lives in
+    SQLite) and does **not** unregister hooks (`unload_plugin()` already does
+    that).
 
 - [ ] Co-occurrence schema in `play_stats.db` (alongside `plays`):
   ```sql
@@ -606,9 +617,20 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
   This is a required deliverable, not optional: it is what gives
   `get_genre_radio` and `get_new_to_you` data to work with. `initialize()`
   calls it in a **background daemon thread** when the `album_songs` table is
-  empty and `recommendations.scan_library_on_startup` (default `true`) is set,
-  so the dashboard is not blocked on a large library. While the scan runs,
-  genre/revisit queries return empty lists until data is available.
+  empty and `scan_library_on_startup` is `true`, so the dashboard is not
+  blocked on a large library. While the scan runs, genre/revisit queries
+  return empty lists until data is available.
+
+- [ ] Dashboard wiring (required for hooks to fire in the real app):
+  - [ ] `main.py` passes `plugin_mgr` to `run_dashboard(music_player=...,
+    artwork_cache=..., config=..., fullscreen=..., plugin_mgr=plugin_mgr)`.
+  - [ ] `ui/dashboard.run_dashboard()` accepts `plugin_mgr` and calls
+    `plugin_mgr.trigger_hook("on_song_change", track_info)` when `_update_ui`
+    starts playing a new track, carrying
+    `{artist, album, title, path, started_at}`.
+  - [ ] `ui/dashboard.run_dashboard()` calls
+    `plugin_mgr.trigger_hook("on_playback_complete", track_info, completed,
+    skipped)` when `_update_ui` detects a track end/skip.
 
 - [ ] Session rules (shared by live recording and `build_from_history`):
   - A listening session is a run of completed plays where the gap between one
@@ -658,10 +680,10 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
   hook events and the payload each carries, and the config schema.
 - [ ] Update `docs/usage/dashboard-guide.md` — describe how the engine hooks
   into the dashboard (the dashboard raises the two events).
-- [ ] Update `README.md` — mark Phase 3 in progress, add `recommendations` to
-  the feature table.
-- [ ] Update `docs/development/testing.md` — add `tests/test_slice_3_1.py` to
-  the Test Layout table.
+- [ ] Update `README.md` — mark Phase 3 as in progress, add `recommendations`
+  to the feature table.
+- [ ] Update `docs/development/testing.md` — add `tests/test_slice_3_1.py`
+  to the Test Layout table.
 
 ### Test Plan
 
@@ -672,26 +694,30 @@ python -m unittest tests.test_slice_3_1 -v
 # Run full suite (should be green)
 python -m unittest discover -s tests -p "test_*.py"
 
-# Verify plugin loads/unloads via a stub core in a temp plugin dir
+# Verify plugin loads/unloads via a temp dir containing the plugin
 python3 -c "
-import sys, tempfile, os; sys.path.insert(0, '.')
+import sys, tempfile, os, shutil; sys.path.insert(0, '.')
 from plugins import PluginManager
 d = tempfile.mkdtemp()
-mgr = PluginManager(plugin_dir=d)  # stub core: None
-print('Loaded', mgr.load_plugins(), 'plugin(s) (expected 0 with empty dir)')
+shutil.copytree('plugins/recommendations', os.path.join(d, 'recommendations'))
+mgr = PluginManager(core_engine=None, plugin_dir=d)
+print('Loaded', mgr.load_plugins(), 'plugin(s) (expected 1)')
+for p in mgr.get_all_plugins():
+    print(f'  - {p.name} v{p.version}')
 mgr.shutdown_all()
+print('Shutdown complete')
 "
 ```
 Tests use a **temporary database** populated with prepared `plays` rows and
 `listallinfo` fixtures (via a stub `MusicPlayer`), never a real listening
 history. The plugin's `initialize()` must tolerate a stub core with no
-`list_all_info` (skips the library scan) and a `session_gap_seconds` of its
-own so it is testable in isolation.
+`list_all_info` (skips the library scan) so it is testable in isolation.
 
 ### Acceptance Criteria
 
 - [ ] Plugin loads without error via `PluginManager.load_plugins()` from
-  `plugins/recommendations/`.
+  `plugins/recommendations/` (a plain `PluginManager(plugin_dir='plugins')`
+  discovers it).
 - [ ] `get_similar_artists('Radiohead')` returns a ranked list after ≥50
   completed plays are recorded in a temporary DB; returns `[]` with no data.
 - [ ] Similar-artist lookup is **bidirectional**: an artist that was always
@@ -700,8 +726,8 @@ own so it is testable in isolation.
 - [ ] Same-artist pairs are never returned (a track never ranks itself).
 - [ ] `get_genre_radio('Blues')` returns shuffled track paths from
   `album_songs` whose `genre` matches (empty when the table is empty).
-- [ ] `get_revisit_candidates(days=30)` excludes albums played in the last 30
-  days.
+- [ ] `get_revisit_candidates(days=30)` returns one track path per album that
+  has not been played in the last 30 days; excludes recently played albums.
 - [ ] `get_new_to_you()` returns library artists absent from `play_stats.db`
   (after a library scan).
 - [ ] Skips break the session: a skipped track produces no pair across the
@@ -724,6 +750,14 @@ own so it is testable in isolation.
 
 ### Notes / Risks
 
+- **Risk:** Database across threads: the engine opens its connection in
+  `initialize()` but `fill_album_songs()` / `build_from_history()` run on a
+  background thread. Mitigation: open with `check_same_thread=False` (like
+  `PlayStats`) and keep all transactions short.
+- **Risk:** Shutdown during a scan: `shutdown()` closes its connection while
+  the background thread may still be writing. Mitigation: `shutdown()` signals
+  a `threading.Event` for the thread to stop, then waits (`thread.join()`)
+  before closing its connection.
 - **Risk:** Co-occurrence matrix grows large with many artists. Mitigation:
   the canonical `(artist_a, artist_b)` primary key bounds growth; queries use
   `LIMIT 10`; `build_from_history()` writes in batches.
@@ -743,7 +777,9 @@ own so it is testable in isolation.
   through `MusicPlayerPlugin.register_hook()` (stored in `_plugin_hooks`);
   callbacks added directly to `PluginManager.hooks` via the public
   `register_hook()` are not dispatched. This slice registers hooks the
-  plugin-way, so it is unaffected; the gap is a separate hardening item.---
+  plugin-way, so it is unaffected; the gap is a separate hardening item.
+
+---
 
 ### Slice 3.2: Discovery Features in UI
 **Goal:** Surface recommendations in the dashboard
@@ -941,3 +977,4 @@ A slice is **done** when:
 | Phase 4 (Remote) | 45 MB | +HTTP server |
 | Phase 5 (Polish) | 50 MB | +voice/battery libs |
 
+**Hard limit:** 64 MB (leave room for OS + MPD buffer)
