@@ -537,23 +537,32 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
 - [ ] `plugins/recommendations/config.json` — Manifest for the first built-in
   plugin. Fields: `plugin_id: "recommendations"`, `name`, `version`,
   `type: "feature"`, `capabilities: ["recommendations"]`, `auto_load: true`,
-  plus `settings` holding `stats.db_path` (default `PlayStats.DEFAULT_DB_PATH`),
-  `recommendations.session_gap_seconds` (default 300), and
-  `recommendations.scan_library_on_startup` (default `true`). The manifest's
+  plus `settings` holding `recommendations.session_gap_seconds` (default 300)
+  and `recommendations.scan_library_on_startup` (default `true`). The manifest's
   `settings_schema` describes the JSON-schema validation for these keys, while
   `settings` holds their actual values — these are separate concerns. The
-  loader only scans one level under `plugins/` (`plugins/__init__.py:81`), so
-  the directory is `plugins/recommendations/`.
+  manifest deliberately does **not** hold a `stats.db_path`: the database path is
+  app-level config, resolved in `initialize()` from the core engine (see below),
+  so a user changing `stats.db_path` in `config.json` cannot leave the plugin
+  pointed at a different, empty database. The loader only scans one level under
+  `plugins/` (`plugins/__init__.py:81`), so the directory is
+  `plugins/recommendations/`.
 
 - [ ] `plugins/recommendations/recommendations.py` — `RecommendationEngine`
   extending `MusicPlayerPlugin`. Constructor is `__init__(self, config)` to
   match the base class and the manager's `plugin_class(manifest.data)` call
-  (`plugins/__init__.py:161`); the engine reads its database path from
-  `config["settings"]["stats.db_path"]` (falling back to
-  `PlayStats.DEFAULT_DB_PATH`), `session_gap_seconds` from
-  `config["settings"]["recommendations.session_gap_seconds"]`, and
+  (`plugins/__init__.py:161`); it reads `session_gap_seconds` from
+  `config["settings"]["recommendations.session_gap_seconds"]` and
   `scan_library_on_startup` from
   `config["settings"]["recommendations.scan_library_on_startup"]`.
+
+  In `initialize(self, core)` the engine resolves the database path from the
+  **app** config, not its own manifest:
+  `raw = core.config.get("stats.db_path", PlayStats.DEFAULT_DB_PATH)` then
+  `self.db_path = os.path.expanduser(raw)`. If `core` or `core.config` is
+  missing (test stub), fall back to `PlayStats.DEFAULT_DB_PATH`, but tests
+  always pass a temporary path (see Test Plan) so they never touch the real
+  `play_stats.db`.
 
   Public API:
   - `get_similar_artists(artist, limit=10)` — returns co-occurring artists
@@ -570,15 +579,18 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
     album from `album_songs`), excluding recently played albums.
   - `get_new_to_you()` — artists from the library (`listallinfo`) absent from
     `play_stats.db`.
-  - `initialize(self, core)` — stores `core`, registers hooks, opens its own
-    database connection (with `check_same_thread=False` like `PlayStats`),
-    starts a background daemon thread for the library scan and/or rebuild.
-    Returns `True`.
+  - `initialize(self, core)` — stores `core`, registers hooks, resolves
+    `self.db_path` from `core.config` (see above), opens the main-thread
+    connection, and starts a background daemon thread for the library scan
+    and/or rebuild. Returns `True`. The background thread opens its **own**
+    SQLite connection **inside the thread** (see Notes/Risks); the main thread
+    and the background thread never share a connection, so one thread's
+    commit/rollback cannot include the other's partial writes.
   - `shutdown(self)` — signals the background thread to stop via a
     `threading.Event`, waits for it to finish (`thread.join()`), then closes its
-    database connection. It does **not** re-persist the matrix (it lives in
-    SQLite) and does **not** unregister hooks (`unload_plugin()` already does
-    that).
+    own connection. The background thread closes its own connection when it
+    exits. It does **not** re-persist the matrix (it lives in SQLite) and does
+    **not** unregister hooks (`unload_plugin()` already does that).
 
 - [ ] Co-occurrence schema in `play_stats.db` (alongside `plays`):
   ```sql
@@ -598,14 +610,20 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
 
   CREATE TABLE IF NOT EXISTS cooccurrence_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
-      last_built_at TEXT NOT NULL
+      last_built_at INTEGER NOT NULL  -- Unix seconds, same type as plays.ended_at
   );
   ```
   `cooccurrence_meta` records when the matrix was last rebuilt so the startup
   staleness check can compare it with `MAX(plays.ended_at)` (a single-timestamp
-  comparison, not two columns of `plays`). The `genres` table is deliberately
-  omitted — it duplicated `album_songs.genre`. The `idx_cooc_a` index is also
-  omitted: the primary key already starts with `artist_a`.
+  comparison, not two columns of `plays`). `last_built_at` is **INTEGER Unix
+  seconds** — the same type as `plays.ended_at` (`core/stats.py:198`) — so the
+  comparison is number-to-number, not text-to-number (a number always sorts
+  below text, which would make the matrix look stale forever). The rebuild
+  writes into a temporary `cooccurrence_new` table and swaps it into place at the
+  end (see below), so there is never a half-built matrix visible to lookups.
+  The `genres` table is deliberately omitted — it duplicated `album_songs.genre`.
+  The `idx_cooc_a` index is also omitted: the primary key already starts with
+  `artist_a`.
 
 - [ ] `MusicPlayer.list_all_info()` (in `core/player.py`) — new method calling
   MPD `listallinfo`. Returns a list of per-track dicts:
@@ -622,9 +640,10 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
   return empty lists until data is available.
 
 - [ ] Dashboard wiring (required for hooks to fire in the real app):
-  - [ ] `main.py` passes `plugin_mgr` to `run_dashboard(music_player=...,
-    artwork_cache=..., config=..., fullscreen=..., plugin_mgr=plugin_mgr)`.
-  - [ ] `ui/dashboard.run_dashboard()` accepts `plugin_mgr` and calls
+  - [ ] `main.py` passes `plugin_mgr` to `run_dashboard(...)`,
+    and `run_dashboard` forwards it to the `Dashboard` class (it is `_update_ui`
+    — a Dashboard method — that raises the hooks).
+  - [ ] `ui/dashboard.run_dashboard()` calls
     `plugin_mgr.trigger_hook("on_song_change", track_info)` when `_update_ui`
     starts playing a new track, carrying
     `{artist, album, title, path, started_at}`.
@@ -633,11 +652,17 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
     skipped)` when `_update_ui` detects a track end/skip.
 
 - [ ] Session rules (shared by live recording and `build_from_history`):
+  - `track_info.started_at` and the engine's stamped `ended_at` are both
+    **Unix seconds** (floats), so the 5-minute gap check compares like with
+    like.
   - A listening session is a run of completed plays where the gap between one
     track's `ended_at` and the next track's `started_at` is `< 5 minutes`
     (`session_gap_seconds`).
-  - A **skip breaks the session** — an incomplete play ends the current run;
-    the next completed play starts a new run.
+  - **Any play that is not completed ends the session** — a skip *and* a stop
+    (Stop button / app close, `completed=False, skipped=False`) both end the
+    current run; the next completed play starts a new run. This matches
+    `build_from_history`, which treats any incomplete `plays` row as a session
+    end.
   - Pairs are recorded once, in canonical order (`artist_a < artist_b`).
   - Same-artist pairs and blank artists are **not** recorded.
   - Consecutive completed plays with a gap `< session_gap_seconds` yield a
@@ -652,22 +677,33 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
     track_info.artist)`. Then set `self.current = track_info`.
   - `on_playback_complete(track_info, completed, skipped)` — if `completed` and
     `self.current` is set, store `self.last_finished` = `self.current` with
-    `ended_at` stamped; clear `self.current`. If `skipped`, clear both
-    (`last_finished` and `current`) so the skip breaks the session.
+    `ended_at` stamped and clear `self.current`; also update
+    `cooccurrence_meta.last_built_at` (so live play does not make the matrix
+    look stale next startup). If the play is **not completed** (whether a skip
+    or a stop with `completed=False, skipped=False`), clear **both** slots
+    (`last_finished` and `current`) — any non-completed play breaks the session,
+    matching `build_from_history`.
   Because pairing happens on `on_song_change` using the *last finished* track
   and the *new* track, a track is never paired with itself.
 
 - [ ] `build_from_history()` — rebuilds the matrix from `plays` rows using the
   same session rules above (completed plays, `< session_gap_seconds` gaps,
-  canonical order, no same-artist or blank pairs), writing to
-  `cooccurrence` and stamping `cooccurrence_meta.last_built_at`. Runs in a
-  batch loop so it does not hold a single huge transaction.
+  canonical order, no same-artist or blank pairs), writing into a temporary
+  `cooccurrence_new` table; when complete it atomically swaps into `cooccurrence`
+  and stamps `cooccurrence_meta.last_built_at` to `MAX(plays.ended_at)` (UNIX
+  seconds). Runs in a batch loop per segment so no single transaction blocks.
+  While it runs, live pair recording is paused behind a `threading.Lock`/`Event`
+  so live writes cannot be wiped or counted twice, and lookups never see a
+  half-built matrix.
 
 - [ ] Startup rebuild (one-shot): `initialize()` compares
-  `cooccurrence_meta.last_built_at` with `MAX(plays.ended_at)`. If the meta row
-  is missing or older than the latest play, it runs `build_from_history()` in
-  the background thread (alongside the library scan) so the dashboard opens
-  immediately. There is no scheduler; rebuild is startup-only and on demand.
+  `cooccurrence_meta.last_built_at` with `MAX(plays.ended_at)` (both INTEGER
+  Unix seconds). If the meta row is missing or older than the latest play, it
+  runs `build_from_history()` in the background thread (alongside the library
+  scan) so the dashboard opens immediately. There is no scheduler; rebuild is
+  startup-only and on demand. Live pair recording updates
+  `cooccurrence_meta.last_built_at` too, so a steady stream of live plays does
+  not mark the matrix stale on the next startup.
 
 ### Documentation Deliverables
 
@@ -694,13 +730,23 @@ python -m unittest tests.test_slice_3_1 -v
 # Run full suite (should be green)
 python -m unittest discover -s tests -p "test_*.py"
 
-# Verify plugin loads/unloads via a temp dir containing the plugin
+# Verify plugin loads/unloads via a temp dir containing the plugin;
+# a stub core provides a temp db path so the run never touches real play_stats.db
 python3 -c "
 import sys, tempfile, os, shutil; sys.path.insert(0, '.')
 from plugins import PluginManager
 d = tempfile.mkdtemp()
 shutil.copytree('plugins/recommendations', os.path.join(d, 'recommendations'))
-mgr = PluginManager(core_engine=None, plugin_dir=d)
+class _StubConfig:
+    def __init__(self, db_path):
+        self._db = db_path
+    def get(self, key, default=None):
+        return self._db if key == 'stats.db_path' else default
+class _StubCore:
+    def __init__(self, db_path):
+        self.config = _StubConfig(db_path)
+core = _StubCore(os.path.join(d, 'test_play_stats.db'))
+mgr = PluginManager(core_engine=core, plugin_dir=d)
 print('Loaded', mgr.load_plugins(), 'plugin(s) (expected 1)')
 for p in mgr.get_all_plugins():
     print(f'  - {p.name} v{p.version}')
@@ -711,7 +757,8 @@ print('Shutdown complete')
 Tests use a **temporary database** populated with prepared `plays` rows and
 `listallinfo` fixtures (via a stub `MusicPlayer`), never a real listening
 history. The plugin's `initialize()` must tolerate a stub core with no
-`list_all_info` (skips the library scan) so it is testable in isolation.
+`list_all_info` (skips the library scan) so it is testable in isolation; the
+stub core's `config.get("stats.db_path")` always points at a temp file.
 
 ### Acceptance Criteria
 
@@ -720,6 +767,8 @@ history. The plugin's `initialize()` must tolerate a stub core with no
   discovers it).
 - [ ] `get_similar_artists('Radiohead')` returns a ranked list after ≥50
   completed plays are recorded in a temporary DB; returns `[]` with no data.
+- [ ] Event timestamps `started_at` / `ended_at` are Unix seconds; the
+  5-minute gap check compares like with like.
 - [ ] Similar-artist lookup is **bidirectional**: an artist that was always
   played *before* the queried artist is still returned (pair stored once in
   canonical order, queried against both columns).
@@ -730,6 +779,9 @@ history. The plugin's `initialize()` must tolerate a stub core with no
   has not been played in the last 30 days; excludes recently played albums.
 - [ ] `get_new_to_you()` returns library artists absent from `play_stats.db`
   (after a library scan).
+- [ ] **Stops break the session**: a stopped track (`completed=False,
+  skipped=False`) produces no pair across the boundary (both live and
+  `build_from_history`).
 - [ ] Skips break the session: a skipped track produces no pair across the
   boundary (both live and `build_from_history`).
 - [ ] Live pairing never pairs a track with itself (two-slot logic).
@@ -737,7 +789,9 @@ history. The plugin's `initialize()` must tolerate a stub core with no
 - [ ] Hook callbacks fire on `on_song_change` and `on_playback_complete`
   raised by the dashboard; `unload_plugin('recommendations')` returns `True`.
 - [ ] Speed target: `get_similar_artists` completes in **< 200 ms on a Pi Zero
-  2 W** for a library with ~1,000 artists (measured in the test with a limit).
+  2 W** for a library with ~1,000 artists (measured **manually on the Pi**;
+  desktop tests assert functional correctness plus a looser bound, e.g.
+  < 500 ms, because CPU differs).
 - [ ] Startup does not block: the dashboard opens immediately while the
   background library scan and rebuild run.
 - [ ] All existing tests continue to pass.
@@ -750,14 +804,21 @@ history. The plugin's `initialize()` must tolerate a stub core with no
 
 ### Notes / Risks
 
-- **Risk:** Database across threads: the engine opens its connection in
-  `initialize()` but `fill_album_songs()` / `build_from_history()` run on a
-  background thread. Mitigation: open with `check_same_thread=False` (like
-  `PlayStats`) and keep all transactions short.
-- **Risk:** Shutdown during a scan: `shutdown()` closes its connection while
-  the background thread may still be writing. Mitigation: `shutdown()` signals
-  a `threading.Event` for the thread to stop, then waits (`thread.join()`)
-  before closing its connection.
+- **Risk:** Background thread shares a connection with the main thread.
+  Mitigation: the background thread opens its **own** SQLite connection inside
+  the thread (not in `initialize()`). The main thread keeps its own connection
+  for live queries; they never share a transaction, so one thread's
+  commit/rollback cannot include the other's partial writes. The main thread
+  opens with `check_same_thread=False` so it can be used from another thread
+  if ever needed, but it is not shared.
+- **Risk:** Staleness check compares `last_built_at` (TEXT) with
+  `MAX(plays.ended_at)` (INTEGER) → text sorts below number, so the matrix
+  would look stale forever. Mitigation: `last_built_at` is **INTEGER Unix
+  seconds** (same type as `plays.ended_at`), so the comparison is
+  number-to-number.
+- **Risk:** Shutdown during a scan: `shutdown()` signals a `threading.Event`
+  for the thread to stop, waits (`thread.join()`), then closes its own
+  connection; the background thread closes its own connection on exit.
 - **Risk:** Co-occurrence matrix grows large with many artists. Mitigation:
   the canonical `(artist_a, artist_b)` primary key bounds growth; queries use
   `LIMIT 10`; `build_from_history()` writes in batches.
