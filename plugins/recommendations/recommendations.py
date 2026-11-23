@@ -198,20 +198,34 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             pass  # best effort
 
     def _should_rebuild(self) -> bool:
-        """Check if matrix is missing or older than latest play."""
-        cur = self._conn.cursor()
-        cur.execute("SELECT last_built_at FROM cooccurrence_meta WHERE id = 1")
-        row = cur.fetchone()
-        if row is None:
-            return True  # never built
-        last_built = row[0]
-        # Get MAX(plays.ended_at)
-        cur.execute("SELECT MAX(ended_at) FROM plays WHERE ended_at IS NOT NULL")
-        row = cur.fetchone()
-        if row is None or row[0] is None:
-            return False  # no plays yet
-        latest_play = row[0]
-        return latest_play > last_built
+        """Check if matrix needs rebuilding.
+
+        Only stamp last_built_at after a successful rebuild.
+        The first build happens on startup if the matrix is missing.
+        Subsequent rebuilds are triggered by the plugin hook payload timing.
+        """
+        if self._conn is None:
+            return True
+        try:
+            cur = self._conn.cursor()
+            cur.execute("SELECT last_built_at FROM cooccurrence_meta WHERE id = 1")
+            row = cur.fetchone()
+            if row is None:
+                # No row yet - first build needed
+                return True
+            # If last_built_at is 0 (freshly created, before any plays were recorded),
+            # don't immediately rebuild - let the first live play populate things.
+            if row[0] == 0:
+                return False
+            cur.execute("SELECT MAX(ended_at) FROM plays WHERE ended_at IS NOT NULL")
+            row = cur.fetchone()
+            if row is None or row[0] is None:
+                return False
+            latest_play = row[0]
+            return latest_play > row[0]
+        except sqlite3.OperationalError:
+            # No such table yet - first build needed
+            return True
 
     def build_from_history(self) -> None:
         """Rebuild co-occurrence matrix from plays table.
@@ -308,15 +322,13 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                     rows,
                 )
 
-            # Atomic swap
+            # Atomic swap inside a transaction to prevent UI reads from seeing
+            # a half-built matrix. All operations run on the main thread's connection.
+            cur.execute("BEGIN IMMEDIATE")
             cur.execute("DROP TABLE IF EXISTS cooccurrence")
             cur.execute("ALTER TABLE cooccurrence_new RENAME TO cooccurrence")
-            # Re-stamp meta with the max_ended_at we read at start
-            cur.execute(
-                "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
-                (max_ended_at,)
-            )
-            self._conn.commit()
+            cur.execute("REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)", (max_ended_at,))
+            cur.execute("COMMIT")
 
     # ------------------------------------------------------------------
     # Hook handlers (called by PluginManager.trigger_hook)
@@ -389,12 +401,18 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             self._current = None
 
     def _update_last_built_at(self, ended_at: int) -> None:
-        """Update cooccurrence_meta.last_built_at to prevent false staleness."""
+        """Update cooccurrence_meta.last_built_at to prevent false staleness.
+
+        Only UPDATE an existing row - never create one. If the matrix has
+        never been built, the row is absent and the next startup rebuild
+        will run; creating a row here would (incorrectly) mark the matrix
+        as built and skip that rebuild forever.
+        """
         with self._rebuild_lock:
             if self._conn:
                 cur = self._conn.cursor()
                 cur.execute(
-                    "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
+                    "UPDATE cooccurrence_meta SET last_built_at = ? WHERE id = 1",
                     (ended_at,)
                 )
                 self._conn.commit()

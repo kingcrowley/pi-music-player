@@ -429,7 +429,7 @@ class MusicPlayer:
     def list_all_info(self) -> list:
         """List every track in the MPD library with metadata.
 
-        Wraps MPD's `listall` command, which returns one entry per file
+        Wraps MPD's `listallinfo` command, which returns one entry per file
         with the fields needed by the recommendation plugin:
         path, artist, album, title, genre, time.
 
@@ -437,16 +437,26 @@ class MusicPlayer:
             List of per-track dicts with keys path, artist, album, title,
             genre, time. Empty list on failure or when MPD has no library.
         """
-        def _do_listall():
+        def _do_listallinfo():
             """Fetch the full MPD library listing."""
             if self.client:
-                return self.client.listall()
+                return self.client.listallinfo()
             return []
 
-        result = self._execute_with_retry(_do_listall)
+        result = self._execute_with_retry(_do_listallinfo)
         if result is False:
             return []
-        return result or []
+        # Normalize: MPD returns tags as lists for multi-value genres; convert to strings
+        normalized = []
+        for entry in result or []:
+            entry = {}
+            for k, v in entry.items():
+                if isinstance(v, list):
+                    entry[k] = ", ".join(str(x) for x in v)
+                else:
+                    entry[k] = str(v)
+            normalized.append(entry)
+        return normalized or []
 
 
 # Import-friendly alias for backward compatibility
