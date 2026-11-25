@@ -405,10 +405,18 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             return
 
         if completed:
-            # Track played to completion: stamp ended_at, rotate slots
-            if self._current is not None:
-                self._last_finished = self._current.copy()
-                self._last_finished["ended_at"] = ended_at
+            # Track played to completion: pair it with the last finished track,
+            # then rotate slots so this track becomes the predecessor for the next one.
+            started_at = track_info.get("started_at")
+            if self._last_finished is not None and self._current is not None:
+                last_artist = self._last_finished.get("artist", "").strip()
+                last_ended = self._last_finished.get("ended_at")
+                if last_artist and last_artist != artist and last_ended is not None:
+                    gap = started_at - last_ended
+                    if gap < self.session_gap_seconds:
+                        self._record_pair(last_artist, artist)
+            self._last_finished = self._current.copy()
+            self._last_finished["ended_at"] = ended_at
             self._current = None
             # Update last_built_at so steady live plays don't trigger rebuild
             self._update_last_built_at(ended_at)

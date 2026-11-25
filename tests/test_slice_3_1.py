@@ -402,6 +402,8 @@ class Slice31TestCase(unittest.TestCase):
         player = MusicPlayer.__new__(MusicPlayer)
         player.client = FakeClient()
         player._connected = True
+        # Stub connection: no real MPD server in tests
+        player._execute_with_retry = lambda fn: fn()
         result = player.list_all_info()
         self.assertEqual(len(result), 2)  # directory entry skipped
         self.assertEqual(result[0]["artist"], "A")
@@ -441,15 +443,16 @@ class Slice31TestCase(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Should rebuild: latest play (300) > last_built (300) is False...
-        # Wait - both are 300, so no rebuild needed
-        # Let me add one more play at 400
+        # Latest (300) == last_built (300) -> no rebuild needed
+        self.assertFalse(plugin._should_rebuild())
+
+        # Add a newer play at 400: latest (400) > last_built (300) -> rebuild needed
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO plays (ended_at) VALUES (400)")
         conn.commit()
         conn.close()
 
-        self.assertTrue(plugin._should_rebuild())  # 400 > 300
+        self.assertTrue(plugin._should_rebuild())
         plugin._conn.close()
 
     def test_plugin_starts_on_empty_db(self):
