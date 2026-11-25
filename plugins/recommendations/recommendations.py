@@ -114,8 +114,28 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             self._conn = None
 
     def _create_schema(self) -> None:
-        """Create recommendation tables in play_stats.db."""
+        """Create recommendation tables in play_stats.db.
+
+        Also creates the plays table (mirrors PlayStats schema) so the
+        background worker can safely read plays on first startup even if
+        PlayStats hasn't created it yet.
+        """
         cur = self._conn.cursor()
+        # Plays table: mirrors PlayStats schema so rebuild can read it
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS plays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_path TEXT NOT NULL,
+                artist TEXT,
+                album TEXT,
+                title TEXT,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                completed BOOLEAN DEFAULT 0,
+                skipped BOOLEAN DEFAULT 0,
+                duration_ms INTEGER
+            )
+        """)
         # Co-occurrence matrix: artist_a < artist_b (canonical order)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS cooccurrence (
@@ -319,13 +339,24 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                     rows,
                 )
 
-            # Atomic swap inside a transaction to prevent UI reads from seeing
-            # a half-built matrix. All operations run on the main thread's connection.
-            cur.execute("BEGIN IMMEDIATE")
-            cur.execute("DROP TABLE IF EXISTS cooccurrence")
-            cur.execute("ALTER TABLE cooccurrence_new RENAME TO cooccurrence")
-            cur.execute("REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)", (max_ended_at,))
-            cur.execute("COMMIT")
+            # Atomic swap: drop old table, rename temp table, stamp meta —
+            # all inside one transaction so readers never see a half-built matrix.
+            # On any error, ROLLBACK leaves the connection clean.
+            try:
+                cur.execute("BEGIN IMMEDIATE")
+                cur.execute("DROP TABLE IF EXISTS cooccurrence")
+                cur.execute("ALTER TABLE cooccurrence_new RENAME TO cooccurrence")
+                cur.execute(
+                    "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
+                    (max_ended_at,)
+                )
+                cur.execute("COMMIT")
+            except Exception:
+                try:
+                    cur.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
 
     # ------------------------------------------------------------------
     # Hook handlers (called by PluginManager.trigger_hook)
@@ -440,22 +471,24 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         """Return co-occurring artists ranked by play_count DESC.
 
         Bidirectional: queries both columns; same-artist pairs excluded.
+        Takes the rebuild lock so reads never see a half-built matrix.
         """
         if not self._conn:
             return []
-        cur = self._conn.cursor()
-        cur.execute("""
-            SELECT artist_a, artist_b, play_count
-            FROM cooccurrence
-            WHERE artist_a != artist_b
-            AND (artist_a = ? OR artist_b = ?)
-        """, (artist, artist))
-        results = []
-        for a, b, count in cur.fetchall():
-            other = b if a == artist else a
-            results.append({"artist": other, "score": count})
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:limit]
+        with self._rebuild_lock:
+            cur = self._conn.cursor()
+            cur.execute("""
+                SELECT artist_a, artist_b, play_count
+                FROM cooccurrence
+                WHERE artist_a != artist_b
+                AND (artist_a = ? OR artist_b = ?)
+            """, (artist, artist))
+            results = []
+            for a, b, count in cur.fetchall():
+                other = b if a == artist else a
+                results.append({"artist": other, "score": count})
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:limit]
 
     def get_recommendations_for_current(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Recommendations based on currently playing track's artist."""
@@ -464,15 +497,19 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         return self.get_similar_artists(self._current_artist, limit)
 
     def get_genre_radio(self, genre: str) -> List[str]:
-        """Shuffled track paths from album_songs matching genre."""
+        """Shuffled track paths from album_songs matching genre.
+
+        Uses instr() so "Rock, Pop" matches both "Rock" and "Pop" queries.
+        """
         if not self._conn:
             return []
-        cur = self._conn.cursor()
-        cur.execute(
-            "SELECT path FROM album_songs WHERE genre = ?",
-            (genre,)
-        )
-        paths = [row[0] for row in cur.fetchall()]
+        with self._rebuild_lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT path FROM album_songs WHERE genre IS NOT NULL AND genre != '' AND instr(genre, ?) > 0",
+                (genre,)
+            )
+            paths = [row[0] for row in cur.fetchall()]
         import random
         random.shuffle(paths)
         return paths
@@ -481,39 +518,41 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         """One track path per album not played in last N days."""
         if not self._conn:
             return []
-        cutoff = int(time.time()) - days * 86400
-        cur = self._conn.cursor()
-        # Find albums with recent plays
-        cur.execute("""
-            SELECT DISTINCT album FROM plays
-            WHERE ended_at IS NOT NULL AND ended_at >= ? AND album IS NOT NULL AND album != ''
-        """, (cutoff,))
-        recent_albums = {row[0] for row in cur.fetchall()}
-        # Find one track per album not in recent_albums
-        cur.execute("""
-            SELECT path, album FROM album_songs
-            WHERE album IS NOT NULL AND album != ''
-        """)
-        candidates = []
-        seen_albums = set()
-        for path, album in cur.fetchall():
-            if album in recent_albums or album in seen_albums:
-                continue
-            candidates.append(path)
-            seen_albums.add(album)
-        return candidates
+        with self._rebuild_lock:
+            cutoff = int(time.time()) - days * 86400
+            cur = self._conn.cursor()
+            # Find albums with recent plays
+            cur.execute("""
+                SELECT DISTINCT album FROM plays
+                WHERE ended_at IS NOT NULL AND ended_at >= ? AND album IS NOT NULL AND album != ''
+            """, (cutoff,))
+            recent_albums = {row[0] for row in cur.fetchall()}
+            # Find one track per album not in recent_albums
+            cur.execute("""
+                SELECT path, album FROM album_songs
+                WHERE album IS NOT NULL AND album != ''
+            """)
+            candidates = []
+            seen_albums = set()
+            for path, album in cur.fetchall():
+                if album in recent_albums or album in seen_albums:
+                    continue
+                candidates.append(path)
+                seen_albums.add(album)
+            return candidates
 
     def get_new_to_you(self) -> List[str]:
         """Artists in library (album_songs) absent from play_stats.plays."""
         if not self._conn:
             return []
-        cur = self._conn.cursor()
-        cur.execute("SELECT DISTINCT artist FROM plays WHERE artist IS NOT NULL AND artist != ''")
-        played_artists = {row[0] for row in cur.fetchall()}
-        cur.execute("SELECT DISTINCT artist FROM album_songs WHERE artist IS NOT NULL AND artist != ''")
-        library_artists = {row[0] for row in cur.fetchall()}
-        new_artists = library_artists - played_artists
-        return list(new_artists)
+        with self._rebuild_lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT DISTINCT artist FROM plays WHERE artist IS NOT NULL AND artist != ''")
+            played_artists = {row[0] for row in cur.fetchall()}
+            cur.execute("SELECT DISTINCT artist FROM album_songs WHERE artist IS NOT NULL AND artist != ''")
+            library_artists = {row[0] for row in cur.fetchall()}
+            new_artists = library_artists - played_artists
+            return list(new_artists)
 
     def fill_album_songs(self) -> None:
         """Public wrapper to trigger library scan (if scan_library_on_startup)."""
