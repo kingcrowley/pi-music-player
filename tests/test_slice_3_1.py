@@ -335,7 +335,11 @@ class Slice31TestCase(unittest.TestCase):
         mgr.shutdown_all()
 
     def test_live_pairing_no_self_pair(self):
-        """Live on_song_change / on_playback_complete never pairs a track with itself."""
+        """Live on_song_change / on_playback_complete never pairs a track with itself.
+
+        Simulates a live session: A starts, A completes, B starts, B completes.
+        Pairing happens in _on_playback_complete when a track finishes.
+        """
         d = _make_temp_plugin_dir()
         self.tmpdirs.append(d)
 
@@ -346,19 +350,21 @@ class Slice31TestCase(unittest.TestCase):
         mgr.load_plugins()
         rec = mgr.get_plugin("recommendations")
 
-        # Simulate on_song_change with Track A
+        # Track A starts (on_song_change)
         track_a = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android", "path": "/a.flac", "started_at": 1000}
         rec._on_song_change(track_a)
 
-        # Simulate on_playback_complete for Track A (completed)
-        track_a_done = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android", "path": "/a.flac"}
-        rec._on_playback_complete(track_a_done, completed=True, skipped=False)
+        # Track A completes (on_playback_complete)
+        rec._on_playback_complete(track_a, completed=True, skipped=False)
 
-        # Now on_song_change with Track B
+        # Track B starts (on_song_change) - no pairing yet
         track_b = {"artist": "Pink Floyd", "album": "Dark Side", "title": "Time", "path": "/b.flac", "started_at": 1500}
         rec._on_song_change(track_b)
 
-        # Pair should be (Radiohead, Pink Floyd)
+        # Track B completes - pair A+B should be recorded
+        rec._on_playback_complete(track_b, completed=True, skipped=False)
+
+        # Pair should be (Radiohead, Pink Floyd) in canonical order
         import sqlite3
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
