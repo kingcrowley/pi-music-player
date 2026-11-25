@@ -399,7 +399,6 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if not track_info or not track_info.get("artist"):
             return
 
-        ended_at = int(time.time())
         artist = track_info["artist"].strip()
         if not artist:
             return
