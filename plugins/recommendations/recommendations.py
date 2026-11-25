@@ -209,20 +209,17 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         try:
             cur = self._conn.cursor()
             cur.execute("SELECT last_built_at FROM cooccurrence_meta WHERE id = 1")
-            row = cur.fetchone()
-            if row is None:
+            meta_row = cur.fetchone()
+            if meta_row is None:
                 # No row yet - first build needed
                 return True
-            # If last_built_at is 0 (freshly created, before any plays were recorded),
-            # don't immediately rebuild - let the first live play populate things.
-            if row[0] == 0:
-                return False
+            last_built = meta_row[0]
             cur.execute("SELECT MAX(ended_at) FROM plays WHERE ended_at IS NOT NULL")
-            row = cur.fetchone()
-            if row is None or row[0] is None:
+            latest_play_row = cur.fetchone()
+            if latest_play_row is None or latest_play_row[0] is None:
                 return False
-            latest_play = row[0]
-            return latest_play > row[0]
+            latest_play = latest_play_row[0]
+            return latest_play > last_built
         except sqlite3.OperationalError:
             # No such table yet - first build needed
             return True

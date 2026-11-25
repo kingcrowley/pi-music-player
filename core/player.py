@@ -447,15 +447,18 @@ class MusicPlayer:
         if result is False:
             return []
         # Normalize: MPD returns tags as lists for multi-value genres; convert to strings
+        # Directory entries have no 'file' key — skip them
         normalized = []
         for entry in result or []:
-            entry = {}
+            if "file" not in entry:
+                continue
+            clean = {}
             for k, v in entry.items():
                 if isinstance(v, list):
-                    entry[k] = ", ".join(str(x) for x in v)
+                    clean[k] = ", ".join(str(x) for x in v)
                 else:
-                    entry[k] = str(v)
-            normalized.append(entry)
+                    clean[k] = str(v)
+            normalized.append(clean)
         return normalized or []
 
 

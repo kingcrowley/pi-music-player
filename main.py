@@ -108,10 +108,6 @@ def main() -> int:
     )
     print(f"Artwork cache ready: {cache.cache_dir}")
 
-    # Create PlayStats before loading plugins so the plays table exists
-    from core.stats import PlayStats
-    stats = PlayStats(db_path=config.get("stats.db_path", PlayStats.DEFAULT_DB_PATH))
-
     # Create plugin manager
     plugin_mgr = PluginManager(core_engine=player, plugin_dir="plugins")
     plugin_mgr.load_plugins()
@@ -124,6 +120,7 @@ def main() -> int:
         artwork_cache=cache,
         config=config,
         fullscreen=config.get("ui.fullscreen", True),
+        plugin_manager=plugin_mgr,
     )
 
     # Cleanup
