@@ -365,13 +365,13 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
     def _on_song_change(self, track_info: Dict[str, Any]) -> None:
         """Called when a new track starts playing.
 
-        track_info carries: {artist, album, title, path, started_at (Unix seconds)}.
-        Uses two-slot logic to avoid self-pairing.
+        Only stores the current track; pairing is deferred to
+        _on_playback_complete so that tracks that never play (stopped/paused)
+        are never paired.
         """
         if not track_info or not track_info.get("artist"):
             return
 
-        started_at = track_info.get("started_at", int(time.time()))
         artist = track_info["artist"].strip()
         if not artist:
             return
@@ -379,25 +379,14 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         # Update current artist for get_recommendations_for_current
         self._current_artist = artist
 
-        # Pair with last finished if within session gap
-        if self._last_finished is not None:
-            last_artist = self._last_finished.get("artist", "").strip()
-            if last_artist and last_artist != artist:
-                last_ended = self._last_finished.get("ended_at")
-                if last_ended is not None:
-                    gap = started_at - last_ended
-                    if gap < self.session_gap_seconds:
-                        self._record_pair(last_artist, artist)
-
-        # Move current → last_finished (slot rotation)
-        self._last_finished = self._current
-        # Set new current track
+        # Store current track info; pairing happens on completion (_on_playback_complete)
+        # so tracks that never play (stopped/paused) are never paired.
         self._current = {
             "artist": artist,
             "album": track_info.get("album", "").strip(),
             "title": track_info.get("title", "").strip(),
             "path": track_info.get("path", "").strip(),
-            "started_at": started_at,
+            "started_at": track_info.get("started_at", int(time.time())),
         }
 
     def _on_playback_complete(
@@ -499,17 +488,23 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
     def get_genre_radio(self, genre: str) -> List[str]:
         """Shuffled track paths from album_songs matching genre.
 
-        Uses instr() so "Rock, Pop" matches both "Rock" and "Pop" queries.
+        Uses delimited match so "Rock" matches "Rock, Pop" but not
+        "Progressive Rock", and is case-insensitive.
         """
         if not self._conn:
             return []
         with self._rebuild_lock:
             cur = self._conn.cursor()
+            # Surround both sides with ", " so we match whole tags only
             cur.execute(
-                "SELECT path FROM album_songs WHERE genre IS NOT NULL AND genre != '' AND instr(genre, ?) > 0",
-                (genre,)
+                "SELECT path, genre FROM album_songs WHERE genre IS NOT NULL AND genre != ''"
             )
-            paths = [row[0] for row in cur.fetchall()]
+            paths = []
+            needle = ", " + genre.lower() + ", "
+            for row in cur.fetchall():
+                haystack = ", " + row[1].lower() + ", "
+                if needle in haystack:
+                    paths.append(row[0])
         import random
         random.shuffle(paths)
         return paths

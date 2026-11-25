@@ -386,5 +386,121 @@ class Slice31TestCase(unittest.TestCase):
         self.assertNotIn("urllib", imports)
 
 
+    # ------------------------------------------------------------------
+    # New tests required by reviewer (catch bugs from previous rounds)
+    # ------------------------------------------------------------------
+
+    def test_list_all_info_against_fake_client(self):
+        """list_all_info() returns tagged tracks and skips directories."""
+        class FakeClient:
+            def listallinfo(self):
+                return [
+                    {"file": "/music/rock/a.flac", "artist": "A", "album": "X", "genre": "Rock, Pop", "time": "200"},
+                    {"directory": "/music/rock"},  # no file key - directory entry
+                    {"file": "/music/blues/b.flac", "artist": "B", "album": "Y", "genre": "Blues", "time": "300"},
+                ]
+        player = MusicPlayer.__new__(MusicPlayer)
+        player.client = FakeClient()
+        player._connected = True
+        result = player.list_all_info()
+        self.assertEqual(len(result), 2)  # directory entry skipped
+        self.assertEqual(result[0]["artist"], "A")
+        self.assertIn("Rock", result[0]["genre"])
+        self.assertIn("Pop", result[0]["genre"])
+        # No empty dicts
+        for entry in result:
+            self.assertNotEqual(entry, {})
+
+    def test_should_rebuild_after_newer_plays(self):
+        """_should_rebuild returns True after newer plays are added."""
+        db_path = os.path.join(tempfile.mkdtemp(), "test.db")
+        import sqlite3
+        # Create plays table with 2 plays
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE plays (id INTEGER PRIMARY KEY, ended_at INTEGER)")
+        conn.execute("INSERT INTO plays (ended_at) VALUES (100), (200)")
+        conn.execute("CREATE TABLE cooccurrence_meta (id INTEGER PRIMARY KEY, last_built_at INTEGER)")
+        conn.execute("INSERT INTO cooccurrence_meta VALUES (1, 100)")
+        conn.commit()
+        conn.close()
+
+        # Create plugin with temp db
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+
+        # Should rebuild: latest play (200) > last_built (100)
+        self.assertTrue(plugin._should_rebuild())
+
+        # After a build, add newer play and check again
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO plays (ended_at) VALUES (300)")
+        conn.execute("UPDATE cooccurrence_meta SET last_built_at = 300")
+        conn.commit()
+        conn.close()
+
+        # Should rebuild: latest play (300) > last_built (300) is False...
+        # Wait - both are 300, so no rebuild needed
+        # Let me add one more play at 400
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO plays (ended_at) VALUES (400)")
+        conn.commit()
+        conn.close()
+
+        self.assertTrue(plugin._should_rebuild())  # 400 > 300
+        plugin._conn.close()
+
+    def test_plugin_starts_on_empty_db(self):
+        """Plugin starts on a fresh/empty database without crashing."""
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "empty.db")
+        player = MockMusicPlayer(db_path)
+        mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+        self.assertIsNotNone(rec)
+        # No crash, table created
+        self.assertIsNotNone(rec._conn)
+        # Lookups should return empty, not crash
+        self.assertEqual(rec.get_similar_artists("Anyone"), [])
+        self.assertEqual(rec.get_genre_radio("Rock"), [])
+        self.assertEqual(rec.get_revisit_candidates(), [])
+        mgr.shutdown_all()
+
+    def test_get_genre_radio_delimited_match(self):
+        """Genre radio uses delimited matching, not substring."""
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+        player = MockMusicPlayer(db_path)
+
+        # Populate album_songs with multi-genre tags
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE album_songs (path TEXT PRIMARY KEY, album TEXT, artist TEXT, genre TEXT)")
+        conn.execute("INSERT INTO album_songs VALUES (?, ?, ?, ?)", ("/a.flac", "AlbumA", "ArtistA", "Rock, Pop"))
+        conn.execute("INSERT INTO album_songs VALUES (?, ?, ?, ?)", ("/b.flac", "AlbumB", "ArtistB", "Progressive Rock"))
+        conn.execute("INSERT INTO album_songs VALUES (?, ?, ?, ?)", ("/c.flac", "AlbumC", "ArtistC", "Blues"))
+        conn.commit()
+        conn.close()
+
+        mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        # "Rock" should match "Rock, Pop" but NOT "Progressive Rock"
+        rock = rec.get_genre_radio("Rock")
+        self.assertIn("/a.flac", rock)
+        self.assertNotIn("/b.flac", rock)  # "Progressive Rock" is not "Rock"
+
+        # Case-insensitive
+        rock_lower = rec.get_genre_radio("rock")
+        self.assertIn("/a.flac", rock_lower)
+
+        mgr.shutdown_all()
+
+
 if __name__ == "__main__":
     unittest.main()
