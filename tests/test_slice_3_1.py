@@ -519,10 +519,7 @@ class Slice31TestCase(unittest.TestCase):
         import main as main_mod
         import inspect
         source = inspect.getsource(main_mod)
-        # Verify the actual call to run_dashboard includes plugin_manager=plugin_mgr
-        # (not just a comment)
-        import re
-        # Find the run_dashboard( call and its arguments
+        # Verify the call to run_dashboard includes plugin_manager=plugin_mgr
         self.assertIn("plugin_manager=plugin_mgr", source)
         self.assertIn("run_dashboard(", source)
 
@@ -583,9 +580,9 @@ class Slice31TestCase(unittest.TestCase):
 
         self.assertIsNone(lookup_exception[0], f"Lookup raised: {lookup_exception[0]}")
         self.assertIsNotNone(lookup_result[0], "Lookup returned None")
-        # 4 other artists (Artist1-4), not 5
+        # 2 other artists (Artist1 and Artist4)
         self.assertEqual(len(lookup_result[0]), 2)
-        # Results should include the 4 other artists
+        # Results should include Artist1 and Artist4
 
     def test_long_tracks_pairing(self):
         """Long tracks (over 5 min) should pair correctly.
@@ -743,7 +740,18 @@ class Slice31TestCase(unittest.TestCase):
         similar = rec.get_similar_artists("ArtistA", limit=10)
         self.assertEqual(len(similar), 0)
 
-        # Now run build_from_history and check again - still should NOT pair
+        # Insert the same plays into the plays table so build_from_history()
+        # processes them, then rebuild and check again
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY AUTOINCREMENT, track_path TEXT, artist TEXT, album TEXT, title TEXT, started_at INTEGER, ended_at INTEGER, completed BOOLEAN, skipped BOOLEAN, duration_ms INTEGER)")
+        conn.execute("INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("/a.flac", "ArtistA", "AlbumA", "TrackA", time_base, time_base + 360, 1, 0))
+        conn.execute("INSERT INTO plays (track_path, artist, album, title, started_at, ended_at, completed, skipped) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("/b.flac", "ArtistB", "AlbumB", "TrackB", time_base + 360 + 600, time_base + 360 + 960, 1, 0))
+        conn.commit()
+        conn.close()
+
+        # Run build_from_history and check again - still should NOT pair
         rec.build_from_history()
         similar = rec.get_similar_artists("ArtistA", limit=10)
         self.assertEqual(len(similar), 0)
