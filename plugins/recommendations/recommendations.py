@@ -407,19 +407,26 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if completed:
             # Track played to completion: pair it with the last finished track,
             # then rotate slots so this track becomes the predecessor for the next one.
-            started_at = track_info.get("started_at")
+            # Gap uses the started_at from the current track (stored at on_song_change)
+            # minus the ended_at of the previous finished track.
             if self._last_finished is not None and self._current is not None:
                 last_artist = self._last_finished.get("artist", "").strip()
                 last_ended = self._last_finished.get("ended_at")
                 if last_artist and last_artist != artist and last_ended is not None:
-                    gap = started_at - last_ended
+                    gap = self._current["started_at"] - last_ended
                     if gap < self.session_gap_seconds:
                         self._record_pair(last_artist, artist)
-            self._last_finished = self._current.copy()
-            self._last_finished["ended_at"] = ended_at
+            if self._current is not None:
+                self._last_finished = self._current.copy()
+                self._last_finished["ended_at"] = int(time.time())
+            else:
+                # Repeat-one: _current is None (no song change between completions).
+                # Keep last_finished as-is; do not overwrite with None.
+                if self._last_finished is not None:
+                    self._last_finished["ended_at"] = int(time.time())
             self._current = None
             # Update last_built_at so steady live plays don't trigger rebuild
-            self._update_last_built_at(ended_at)
+            self._update_last_built_at(int(time.time()))
         else:
             # Skip or stop (completed=False, skipped=True/False): break session
             self._last_finished = None

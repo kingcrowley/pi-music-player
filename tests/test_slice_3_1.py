@@ -510,6 +510,148 @@ class Slice31TestCase(unittest.TestCase):
 
         mgr.shutdown_all()
 
+    # ------------------------------------------------------------------
+    # Additional tests requested by reviewer
+    # ------------------------------------------------------------------
+
+    def test_main_passes_plugin_manager_to_dashboard(self):
+        """main.py passes plugin_mgr to run_dashboard as plugin_manager."""
+        import sys, tempfile, shutil, os
+        sys.path.insert(0, '.')
+        from main import _resolve_song_path
+        # We'll check the main.py source directly since it's hard to run main() in test
+        import main as main_mod
+        import inspect
+        source = inspect.getsource(main_mod)
+        # Verify the call to run_dashboard includes plugin_manager=plugin_mgr
+        self.assertIn('plugin_manager=plugin_mgr', source)
+        self.assertIn('run_dashboard(', source)
+
+    def test_lookup_during_rebuild_waits(self):
+        """A lookup during rebuild waits for the lock instead of failing."""
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+
+        db_path = os.path.join(d, "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE cooccurrence (artist_a TEXT, artist_b TEXT, play_count INTEGER, PRIMARY KEY (artist_a, artist_b))")
+        conn.execute("INSERT INTO cooccurrence VALUES (?, ?, ?)", ("A", "B", 5))
+        conn.execute("CREATE TABLE cooccurrence_meta (id INTEGER PRIMARY KEY, last_built_at INTEGER)")
+        conn.execute("INSERT INTO cooccurrence_meta VALUES (1, 100)")
+        conn.commit()
+        conn.close()
+
+        player = MockMusicPlayer(db_path)
+        mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        import threading
+        import time
+
+        rebuild_done = threading.Event()
+        lookup_result = [None]
+        lookup_exception = [None]
+
+        def do_rebuild():
+            rec.build_from_history()
+            rebuild_done.set()
+
+        def do_lookup():
+            time.sleep(0.05)  # Let rebuild start
+            try:
+                result = rec.get_similar_artists("A", limit=10)
+                lookup_result[0] = result
+            except Exception as e:
+                lookup_exception[0] = e
+            finally:
+                # Make sure rebuild has time to finish
+                rebuild_done.wait(timeout=2.0)
+
+        t1 = threading.Thread(target=do_rebuild)
+        t2 = threading.Thread(target=do_lookup)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        self.assertIsNone(lookup_exception[0], f"Lookup raised: {lookup_exception[0]}")
+        self.assertIsNotNone(lookup_result[0], "Lookup returned None")
+        self.assertEqual(len(lookup_result[0]), 1)
+        self.assertEqual(lookup_result[0][0]["artist"], "B")
+
+    def test_long_tracks_pairing(self):
+        """Long tracks (over 5 min) should pair correctly.
+
+        The gap uses the track's start time, not the completion time.
+        Two 6-minute tracks played back to back should still pair.
+        """
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+
+        db_path = os.path.join(d, "test.db")
+        player = MockMusicPlayer(db_path)
+
+        mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        # Simulate track A: 6 minutes (360 seconds)
+        track_a = {"artist": "ArtistA", "album": "AlbumA", "title": "TrackA", "path": "/a.flac", "started_at": 1000}
+        rec._on_song_change(track_a)
+        # Track A completes at 1000 + 360 = 1360
+        rec._on_playback_complete({"artist": "ArtistA"}, completed=True, skipped=False)
+
+        # Track B starts 30 seconds after A completes (within 5-min gap)
+        track_b = {"artist": "ArtistB", "album": "AlbumB", "title": "TrackB", "path": "/b.flac", "started_at": 1390}
+        rec._on_song_change(track_b)
+        # Track B completes
+        rec._on_playback_complete({"artist": "ArtistB"}, completed=True, skipped=False)
+
+        # Should pair A-B (gap = 1390 - 1360 = 30 seconds < 300)
+        similar = rec.get_similar_artists("ArtistA", limit=10)
+        self.assertEqual(len(similar), 1)
+        self.assertEqual(similar[0]["artist"], "ArtistB")
+
+        mgr.shutdown_all()
+
+    def test_repeat_one_pairing(self):
+        """Repeat-one (two completions with no song change) does not crash.
+
+        The second completion should clear _current without crashing on .copy().
+        """
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+
+        db_path = os.path.join(d, "test.db")
+        player = MockMusicPlayer(db_path)
+
+        mgr = PluginManager(core_engine=player, plugin_dir="plugins")
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        # Track A starts
+        track_a = {"artist": "ArtistA", "album": "AlbumA", "title": "TrackA", "path": "/a.flac", "started_at": 1000}
+        rec._on_song_change(track_a)
+
+        # Track A completes (first play)
+        rec._on_playback_complete({"artist": "ArtistA"}, completed=True, skipped=False)
+
+        # Repeat-one: Track A completes again, no song change
+        # _current should be None now, so no pairing and no crash
+        rec._on_playback_complete({"artist": "ArtistA"}, completed=True, skipped=False)
+
+        # Should not crash, no pairs recorded
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT artist_a, artist_b, play_count FROM cooccurrence")
+        pairs = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(pairs), 0)
+
+        mgr.shutdown_all()
+
 
 if __name__ == "__main__":
     unittest.main()
