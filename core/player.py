@@ -436,6 +436,33 @@ class MusicPlayer:
                 self.client.clear()
         return self._execute_with_retry(_do_clear)
 
+    @staticmethod
+    def _normalize_listallinfo(result) -> list:
+        """Build the documented per-track dict shape (path, artist, album,
+        title, genre, time). `path` comes from MPD's `file` key; missing tags
+        default to "". MPD returns tags as lists for multi-value genres; convert
+        to strings. Directory entries have no 'file' key — skip them.
+        """
+        normalized = []
+        for entry in result or []:
+            if "file" not in entry:
+                continue
+            def _as_text(value: Any) -> str:
+                if isinstance(value, list):
+                    return ", ".join(str(x) for x in value)
+                if value is None:
+                    return ""
+                return str(value)
+            normalized.append({
+                "path": entry.get("file") or "",
+                "artist": _as_text(entry.get("artist")),
+                "album": _as_text(entry.get("album")),
+                "title": _as_text(entry.get("title")),
+                "genre": _as_text(entry.get("genre")),
+                "time": _as_text(entry.get("time")),
+            })
+        return normalized or []
+
     def list_all_info(self) -> list:
         """List every track in the MPD library with metadata.
 
@@ -456,46 +483,29 @@ class MusicPlayer:
         result = self._execute_with_retry(_do_listallinfo)
         if result is False:
             return []
-        # Normalize: build the documented per-track dict shape explicitly
-        # (path, artist, album, title, genre, time). `path` comes from MPD's
-        # `file` key; missing tags default to "".
-        # MPD returns tags as lists for multi-value genres; convert to strings.
-        # Directory entries have no 'file' key — skip them.
-        normalized = []
-        for entry in result or []:
-            if "file" not in entry:
-                continue
-            def _tag(key: str) -> str:
-                v = entry.get(key)
-                if isinstance(v, list):
-                    return ", ".join(str(x) for x in v)
-                if v is None:
-                    return ""
-                return str(v)
-            normalized.append({
-                "path": entry.get("file") or "",
-                "artist": _tag("artist"),
-                "album": _tag("album"),
-                "title": _tag("title"),
-                "genre": _tag("genre"),
-                "time": _tag("time"),
-            })
-        return normalized or []
+        return self._normalize_listallinfo(result)
 
     def list_all_info_own_client(self) -> list:
         """Run MPD listallinfo on a short-lived dedicated client.
 
         Used by background library scans so they do not pin the shared
         MusicPlayer connection (and therefore the serialized lock) while
-        issuing a potentially slow command. Returns the raw listing;
-        callers handle normalization. Empty list on failure.
+        issuing a potentially slow command. Returns the normalized listing
+        with path and plain-string tags, so downstream code that reads
+        ``track["path"]`` and ``track["artist"]`` works without further
+        normalization.
+
+        Empty list on failure.
         """
         client = LibMPDClient()
         client.timeout = self.timeout
-        client.connect(self.host, self.port)
+        try:
+            client.connect(self.host, self.port)
+        except Exception:
+            return []
         try:
             result = client.listallinfo()
-            return list(result or [])
+            return self._normalize_listallinfo(result)
         except Exception:
             return []
         finally:

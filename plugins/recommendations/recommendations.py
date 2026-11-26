@@ -5,6 +5,7 @@ Builds artist→artist affinity matrix from listening sessions.
 Provides: similar artists, genre radio, revisit candidates, new-to-you artists.
 """
 
+import logging
 import os
 import sqlite3
 import threading
@@ -13,6 +14,17 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.plugin_base import MusicPlayerPlugin
+
+logger = logging.getLogger(__name__)
+
+
+def _as_text(value: Any) -> str:
+    """Convert MPD tag value to plain string (handles list-valued tags)."""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value)
+    if value is None:
+        return ""
+    return str(value)
 
 
 class MusicPlayerPlugin(MusicPlayerPlugin):
@@ -213,40 +225,50 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         The insert runs under _rebuild_lock so a concurrent live pair write
         (which calls self._conn.commit() on the same connection) cannot close
         the scan's transaction early and leak partial rows.
+
+        The MPD listing is fetched outside _rebuild_lock so a slow scan does
+        not block Tk-thread hook callbacks that need that lock (finding 5).
         """
         if not self.core or not hasattr(self.core, "list_all_info"):
             return
         if self._stop_event and self._stop_event.is_set():
             return
-        with self._rebuild_lock:
-            if self._stop_event and self._stop_event.is_set():
+        cur = self._conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM album_songs")
+        if cur.fetchone()[0] > 0:
+            return  # already populated
+        try:
+            # Use short-lived client for the scan so it does not pin the
+            # shared MusicPlayer connection (and therefore the serialized
+            # lock) during a potentially slow listallinfo.
+            if hasattr(self.core, "list_all_info_own_client"):
+                library = self.core.list_all_info_own_client()
+            else:
+                library = self.core.list_all_info()
+            if not library:
                 return
-            cur = self._conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM album_songs")
-            if cur.fetchone()[0] > 0:
-                return  # already populated
-            try:
-                # Use short-lived client for the scan so it does not pin the
-                # shared MusicPlayer connection (and therefore the serialized
-                # lock) during a potentially slow listallinfo.
-                if hasattr(self.core, "list_all_info_own_client"):
-                    library = self.core.list_all_info_own_client()
-                else:
-                    library = self.core.list_all_info()
-                if not library:
+            rows = []
+            for track in library:
+                path = track.get("path") or track.get("file") or ""
+                if not path:
+                    continue
+                artist = _as_text(track.get("artist")).strip()
+                album = _as_text(track.get("album")).strip()
+                genre = _as_text(track.get("genre")).strip()
+                if not artist:
+                    continue
+                rows.append((path, album, artist, genre))
+            if not rows:
+                return
+            # Write under _rebuild_lock, re-checking emptiness inside.
+            with self._rebuild_lock:
+                if self._stop_event and self._stop_event.is_set():
                     return
-                rows = []
-                for track in library:
-                    path = track.get("file") or track.get("path")
-                    if not path:
-                        continue
-                    artist = track.get("artist", "").strip()
-                    album = track.get("album", "").strip()
-                    genre = track.get("genre", "").strip()
-                    if not artist:
-                        continue
-                    rows.append((path, album, artist, genre))
-                if rows:
+                cur = self._conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM album_songs")
+                if cur.fetchone()[0] > 0:
+                    return  # already populated while fetching
+                try:
                     # One transaction: an interrupted scan must not leave a
                     # partial library behind (which would stick the next start-up
                     # on "table is not empty" and skip the rescan). See issue #15.
@@ -263,8 +285,10 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                         except Exception:
                             pass
                         raise
-            except Exception:
-                pass  # best effort
+                except Exception as e:
+                    logger.warning("Library scan write failed: %s", e)
+        except Exception as e:
+            logger.warning("Library scan failed: %s", e)
 
     def _should_rebuild(self) -> bool:
         """Check if matrix needs rebuilding.

@@ -22,7 +22,7 @@ import sqlite3
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -540,7 +540,13 @@ class Slice31TestCase(unittest.TestCase):
 
     def test_scan_is_atomic_no_partial_rows(self):
         """An interrupted library scan leaves album_songs empty so the next
-        start-up rescan (the scan checks COUNT(*) = 0 and retries)."""
+        start-up rescan (the scan checks COUNT(*) = 0 and retries).
+
+        The failure is triggered during the insert (not before any row is
+        gathered) so it genuinely exercises the BEGIN IMMEDIATE / ROLLBACK
+        path. Without the transaction, the first batch of rows would be
+        committed before the failing executemany and stay visible.
+        """
         d = tempfile.mkdtemp()
         self.tmpdirs.append(d)
         db_path = os.path.join(d, "test.db")
@@ -551,27 +557,62 @@ class Slice31TestCase(unittest.TestCase):
         plugin._conn.execute("PRAGMA journal_mode=WAL")
         plugin._create_schema()
 
-        class FlakyCore:
+        class GoodCore:
             def list_all_info(self):
-                raise RuntimeError("MPD died mid-scan")
+                return [
+                    {"file": "/music/a.flac", "artist": "A", "album": "Al", "title": "T", "genre": "Rock"},
+                    {"file": "/music/b.flac", "artist": "B", "album": "Al", "title": "T", "genre": "Rock"},
+                ]
 
-        plugin.core = FlakyCore()
-        # _stop_event is None; _scan_library_if_empty returns early if None
-        plugin._scan_library_if_empty()
+        class _FailingCursor:
+            """Cursor proxy that inserts the first row and then fails.
 
-        # No partial rows should be committed.
+            Writing a row before raising is what makes this test verify the
+            transaction: with BEGIN IMMEDIATE the row is rolled back (count 0),
+            but without it the row would remain committed (count 1).
+            """
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args):
+                return self._real.execute(sql, *args)
+
+            def executemany(self, sql, seq):
+                seq = list(seq)
+                if seq:
+                    self._real.execute(sql, seq[0])  # write one row first
+                raise RuntimeError("disk error mid-insert")
+
+            def fetchone(self):
+                return self._real.fetchone()
+
+            def fetchall(self):
+                return self._real.fetchall()
+
+        class _FailingConn:
+            def __init__(self, real):
+                self._real = real
+
+            def cursor(self):
+                return _FailingCursor(self._real.cursor())
+
+        plugin.core = GoodCore()
+        real_conn = plugin._conn
+        plugin._conn = _FailingConn(real_conn)
+        try:
+            plugin._scan_library_if_empty()
+        finally:
+            plugin._conn = real_conn
+
+        # No partial rows should be committed after the rolled-back scan.
         cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
         self.assertEqual(cur.fetchone()[0], 0)
 
-        # Next scan with a healthy core should succeed.
-        class GoodCore:
-            def list_all_info(self):
-                return [{"file": "/music/a.flac", "artist": "A", "album": "Al", "title": "T", "genre": "Rock"}]
-
+        # Next scan with a healthy connection should succeed.
         plugin.core = GoodCore()
         plugin._scan_library_if_empty()
         cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
-        self.assertEqual(cur.fetchone()[0], 1)
+        self.assertEqual(cur.fetchone()[0], 2)
         plugin._conn.close()
 
     def test_hook_dispatches_reach_on_playback_complete(self):
@@ -850,6 +891,108 @@ class Slice31TestCase(unittest.TestCase):
 
         mgr.shutdown_all()
 
+    def test_execute_with_retry_holds_rlock(self):
+        """_execute_with_retry acquires the MPD RLock around the command.
+
+        Ensures that the RLock is wired in and used; without it concurrent
+        commands on the same MusicPlayer instance could interleave on the
+        shared python-mpd2 client socket.
+        """
+        player = MusicPlayer.__new__(MusicPlayer)
+        player._connected = True
+        player.client = MagicMock()
+        player.client.ping.return_value = None
+        acquired = []
+        class RecordingLock:
+            def __enter__(self):
+                acquired.append(True)
+                return self
+            def __exit__(self, *a):
+                return False
+        player._lock = RecordingLock()
+
+        def _cmd():
+            return player.client.status()
+
+        player.client.status.return_value = {"state": "play"}
+        player._execute_with_retry(_cmd)
+        self.assertTrue(
+            acquired, "Command should run under the player lock"
+        )
+
+    def test_list_all_info_own_client_normalizes_multi_value_tags(self):
+        """list_all_info_own_client() tidies list-valued tags into plain strings.
+
+        Simulating an MPD library where python-mpd2 returns repeated tags as
+        lists (e.g. genre: ["Rock", "Pop"]), the helper in
+        MusicPlayer._normalize_listallinfo converts them to plain comma-separated
+        strings so downstream code that reads ``track["artist"]`` or
+        ``track["genre"]`` works without list-valued tag failures (bug 1).
+        """
+        class FakeClient:
+            def __init__(self):
+                self.timeout = None
+            def connect(self, host, port):
+                pass
+            def listallinfo(self):
+                return [
+                    {"file": "/music/rock/a.flac", "artist": ["A", "B"], "album": "X",
+                     "genre": ["Rock", "Pop"], "title": "T", "time": "200"},
+                    {"directory": "/music/rock"},
+                ]
+            def close(self):
+                pass
+            def disconnect(self):
+                pass
+        from unittest.mock import patch
+        with patch("core.player.LibMPDClient", FakeClient):
+            player = MusicPlayer(host="localhost", port=6600)
+            result = player.list_all_info_own_client()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["path"], "/music/rock/a.flac")
+        self.assertEqual(result[0]["artist"], "A, B")
+        self.assertIn("Rock", result[0]["genre"])
+        self.assertIn("Pop", result[0]["genre"])
+
+    def test_scan_handles_multi_value_tags(self):
+        """A track with list-valued genre/artist tags is still written to album_songs.
+
+        The scan helper _as_text() converts list tags to plain strings before
+        inserting into album_songs, so bug 1 (list tags empty the library) does
+        not happen on real MPD either (where multi-value tags are common).
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        # Core that returns raw list-valued tags (simulating an unnormalized
+        # source, e.g. an own-client path before normalization).
+        class Core:
+            def list_all_info(self):
+                return []
+            def list_all_info_own_client(self):
+                return [
+                    {"path": "/music/rock/a.flac", "artist": ["A", "B"],
+                     "album": "Al", "genre": ["Rock", "Pop"], "time": "200"},
+                    {"directory": "/music/rock"},
+                ]
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+        plugin.core = Core()
+
+        # Invoked directly so we test the scan's own _as_text() handling of
+        # list-valued tags regardless of MPD-layer normalization.
+        plugin._scan_library_if_empty()
+
+        # album_songs should contain the track despite list-valued tags.
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 1,
+                         "List-valued tags should not empty album_songs")
+        plugin._conn.close()
 
 if __name__ == "__main__":
     unittest.main()
