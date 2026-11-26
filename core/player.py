@@ -5,6 +5,7 @@ Reliable MPD communication with automatic reconnection.
 All MPD calls are wrapped in try/except — no exception propagates to UI.
 """
 
+import threading
 import time
 from typing import Any, Dict, Optional
 from mpd import MPDClient as LibMPDClient
@@ -32,6 +33,13 @@ class MusicPlayer:
         self.client: Optional[LibMPDClient] = None
         self._connected = False
         self._last_known_state: Dict[str, Any] = {}
+        # RLock serializes all MPD commands. The shared python-mpd2 client is
+        # not thread-safe: one socket carries every command and reply, so two
+        # concurrent commands can mix up their replies. The lock also protects
+        # reconnect logic (connect() swaps self.client) against races with
+        # another thread mid-command. RLock allows nested acquisition from
+        # _execute_with_retry -> _ensure_connected -> connect().
+        self._lock = threading.RLock()
 
     def connect(self) -> bool:
         """Connect to MPD with exponential backoff retry logic.
@@ -107,32 +115,33 @@ class MusicPlayer:
             For playback control closures that return None on success,
             this method returns True to indicate success.
         """
-        if not self._ensure_connected():
-            return False
+        with self._lock:
+            if not self._ensure_connected():
+                return False
 
-        try:
-            result = command(*args, **kwargs)
-            # MPD commands return None on success for control commands.
-            # Return True for control success, otherwise return the actual result.
-            if result is None:
-                # Control command success (play, pause, etc.)
-                return True
-            # Query result — return as-is
-            return result
-        except Exception as e:
-            print(f"[MusicPlayer] Command failed: {e}. Attempting reconnect...")
-            # Try reconnect once
-            if self.connect():
-                try:
-                    result = command(*args, **kwargs)
-                    # Same logic: None means success for control commands
-                    if result is None:
-                        return True
-                    return result
-                except Exception as e2:
-                    print(f"[MusicPlayer] Retry also failed: {e2}")
-                    self._connected = False
-            return False
+            try:
+                result = command(*args, **kwargs)
+                # MPD commands return None on success for control commands.
+                # Return True for control success, otherwise return the actual result.
+                if result is None:
+                    # Control command success (play, pause, etc.)
+                    return True
+                # Query result — return as-is
+                return result
+            except Exception as e:
+                print(f"[MusicPlayer] Command failed: {e}. Attempting reconnect...")
+                # Try reconnect once
+                if self.connect():
+                    try:
+                        result = command(*args, **kwargs)
+                        # Same logic: None means success for control commands
+                        if result is None:
+                            return True
+                        return result
+                    except Exception as e2:
+                        print(f"[MusicPlayer] Retry also failed: {e2}")
+                        self._connected = False
+                return False
 
     def is_connected(self) -> bool:
         """Check if currently connected to MPD.
@@ -140,14 +149,15 @@ class MusicPlayer:
         Returns:
             bool: True if connected, False otherwise
         """
-        if not self._connected or not self.client:
-            return False
-        try:
-            self.client.ping()
-            return True
-        except Exception:
-            self._connected = False
-            return False
+        with self._lock:
+            if not self._connected or not self.client:
+                return False
+            try:
+                self.client.ping()
+                return True
+            except Exception:
+                self._connected = False
+                return False
 
     def get_status(self) -> Dict[str, Any]:
         """Get current MPD playback status.
@@ -446,19 +456,30 @@ class MusicPlayer:
         result = self._execute_with_retry(_do_listallinfo)
         if result is False:
             return []
-        # Normalize: MPD returns tags as lists for multi-value genres; convert to strings
-        # Directory entries have no 'file' key — skip them
+        # Normalize: build the documented per-track dict shape explicitly
+        # (path, artist, album, title, genre, time). `path` comes from MPD's
+        # `file` key; missing tags default to "".
+        # MPD returns tags as lists for multi-value genres; convert to strings.
+        # Directory entries have no 'file' key — skip them.
         normalized = []
         for entry in result or []:
             if "file" not in entry:
                 continue
-            clean = {}
-            for k, v in entry.items():
+            def _tag(key: str) -> str:
+                v = entry.get(key)
                 if isinstance(v, list):
-                    clean[k] = ", ".join(str(x) for x in v)
-                else:
-                    clean[k] = str(v)
-            normalized.append(clean)
+                    return ", ".join(str(x) for x in v)
+                if v is None:
+                    return ""
+                return str(v)
+            normalized.append({
+                "path": entry.get("file") or "",
+                "artist": _tag("artist"),
+                "album": _tag("album"),
+                "title": _tag("title"),
+                "genre": _tag("genre"),
+                "time": _tag("time"),
+            })
         return normalized or []
 
 

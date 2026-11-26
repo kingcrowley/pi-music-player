@@ -385,9 +385,15 @@ class Slice31TestCase(unittest.TestCase):
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    imports.append(alias.name)
+                    # Compare only the top-level package name to catch submodule
+                    # imports (e.g. urllib.request should fail the check too).
+                    top = alias.name.split(".")[0]
+                    imports.append(top)
             elif isinstance(node, ast.ImportFrom):
-                imports.append(node.module)
+                if node.module:
+                    # Compare only the top-level package name.
+                    top = node.module.split(".")[0]
+                    imports.append(top)
         self.assertNotIn("requests", imports)
         self.assertNotIn("urllib", imports)
 
@@ -511,8 +517,90 @@ class Slice31TestCase(unittest.TestCase):
         mgr.shutdown_all()
 
     # ------------------------------------------------------------------
-    # Additional tests requested by reviewer
+    # Suggested tests from reviewer (issue #15)
     # ------------------------------------------------------------------
+
+    def test_plugin_starts_with_db_path_in_missing_directory(self):
+        """Plugin loads when stats.db_path points into a directory that doesn't exist yet."""
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+
+        nested_dir = os.path.join(d, "no", "such", "dir")
+        db_path = os.path.join(nested_dir, "test_play_stats.db")
+        player = MockMusicPlayer(db_path)
+
+        mgr = PluginManager(core_engine=player, plugin_dir=str(d))
+        loaded = mgr.load_plugins()
+        self.assertEqual(loaded, 1, "Expected 1 plugin to load")
+        mgr.shutdown_all()
+
+        # Plugin must have created the directory and connected to the db
+        self.assertTrue(os.path.exists(db_path))
+        self.assertTrue(os.path.exists(os.path.dirname(db_path)))
+
+    def test_scan_is_atomic_no_partial_rows(self):
+        """An interrupted library scan leaves album_songs empty so the next
+        start-up rescan (the scan checks COUNT(*) = 0 and retries)."""
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+
+        class FlakyCore:
+            def list_all_info(self):
+                raise RuntimeError("MPD died mid-scan")
+
+        plugin.core = FlakyCore()
+        # _stop_event is None; _scan_library_if_empty returns early if None
+        plugin._scan_library_if_empty()
+
+        # No partial rows should be committed.
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 0)
+
+        # Next scan with a healthy core should succeed.
+        class GoodCore:
+            def list_all_info(self):
+                return [{"file": "/music/a.flac", "artist": "A", "album": "Al", "title": "T", "genre": "Rock"}]
+
+        plugin.core = GoodCore()
+        plugin._scan_library_if_empty()
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 1)
+        plugin._conn.close()
+
+    def test_hook_dispatches_reach_on_playback_complete(self):
+        """Hooks dispatched through a real PluginManager reach _on_playback_complete."""
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+        player = MockMusicPlayer(db_path)
+        mgr = PluginManager(core_engine=player, plugin_dir=str(d))
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        # Drive live pairing through the real PluginManager dispatch path
+        track_a = {"artist": "ArtistA", "album": "AlbumA", "title": "TrackA", "path": "/a.flac", "started_at": 1000}
+        track_b = {"artist": "ArtistB", "album": "AlbumB", "title": "TrackB", "path": "/b.flac", "started_at": 2000}
+        mgr.trigger_hook("on_song_change", track_a)
+        mgr.trigger_hook("on_playback_complete", track_a, completed=True, skipped=False)
+        mgr.trigger_hook("on_song_change", track_b)
+        mgr.trigger_hook("on_playback_complete", track_b, completed=True, skipped=False)
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT artist_a, artist_b, play_count FROM cooccurrence")
+        pairs = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][:2], ("ArtistA", "ArtistB"))
+        mgr.shutdown_all()
 
     def test_main_passes_plugin_manager_to_dashboard(self):
         """main.py passes plugin_mgr to run_dashboard as plugin_manager."""
@@ -524,7 +612,7 @@ class Slice31TestCase(unittest.TestCase):
         self.assertIn("run_dashboard(", source)
 
     def test_lookup_during_rebuild_waits(self):
-        """A lookup during rebuild waits for the lock instead of failing."""
+        """A lookup during rebuild does not raise and sees correct results after."""
         d = _make_temp_plugin_dir()
         self.tmpdirs.append(d)
 
@@ -561,7 +649,9 @@ class Slice31TestCase(unittest.TestCase):
             rebuild_done.set()
 
         def do_lookup():
-            # Wait for rebuild to start and acquire lock
+            # Wait for rebuild to start. build_from_history() no longer holds
+            # the lock while computing, so the lookup must not block waiting
+            # for the whole rebuild — but it must not raise either.
             rebuild_started.wait(timeout=2.0)
             try:
                 result = rec.get_similar_artists("Artist0", limit=10)
@@ -580,8 +670,10 @@ class Slice31TestCase(unittest.TestCase):
 
         self.assertIsNone(lookup_exception[0], f"Lookup raised: {lookup_exception[0]}")
         self.assertIsNotNone(lookup_result[0], "Lookup returned None")
-        # 2 other artists (Artist1 and Artist4)
-        self.assertEqual(len(lookup_result[0]), 2)
+        # Once the rebuild finishes, the lookup sees the new matrix:
+        # Artist0 pairs with Artist1 and Artist4 (2 other artists).
+        final_result = rec.get_similar_artists("Artist0", limit=10)
+        self.assertEqual(len(final_result), 2)
         # Results should include Artist1 and Artist4
 
     def test_long_tracks_pairing(self):

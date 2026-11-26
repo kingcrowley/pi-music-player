@@ -552,9 +552,9 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
   extending `MusicPlayerPlugin`. Constructor is `__init__(self, config)` to
   match the base class and the manager's `plugin_class(manifest.data)` call
   (`plugins/__init__.py:161`); it reads `session_gap_seconds` from
-  `config["settings"]["recommendations.session_gap_seconds"]` and
+  `config["settings"]["recommendations"]["session_gap_seconds"]` and
   `scan_library_on_startup` from
-  `config["settings"]["recommendations.scan_library_on_startup"]`.
+  `config["settings"]["recommendations"]["scan_library_on_startup"]`.
 
   In `initialize(self, core)` the engine resolves the database path from the
   **app** config, not its own manifest:
@@ -680,21 +680,23 @@ It exercises `PluginManager` load/unload and the `on_song_change` /
 - [ ] Live pairing with two slots (`self.last_finished`, `self.current`) —
   avoids pairing a track with itself:
   - `on_song_change(track_info)` — `track_info` carries
-    `{artist, album, title, path, started_at}`. If `self.last_finished` is set
-    and `track_info.started_at - self.last_finished.ended_at <
-    session_gap_seconds`, record the pair `(last_finished.artist,
-    track_info.artist)`. Then set `self.current = track_info`.
-  - `on_playback_complete(track_info, completed, skipped)` — if `completed` and
-    `self.current` is set, store `self.last_finished` = `self.current` with
-    `ended_at` stamped and clear `self.current`; also set
-    `cooccurrence_meta.last_built_at` to that play's `ended_at` (not "now"), so
-    live play does not make the matrix look stale next startup and the stamp
-    can never be newer than the play it covers. If the play is **not completed** (whether a skip
-    or a stop with `completed=False, skipped=False`), clear **both** slots
+    `{artist, album, title, path, started_at}`. Stores `self.current = track_info`
+    and updates `self._current_artist`; **no pairing happens here** — pairing is
+    deferred to completion so that skipped/stopped tracks are never paired.
+  - `on_playback_complete(track_info, completed, skipped)` — pairing happens
+    here: if `completed` and both `self.current` and `self.last_finished` are set
+    and `current.started_at - last_finished.ended_at < session_gap_seconds`,
+    record the pair `(last_finished.artist, current.artist)` in canonical order.
+    Then `self.last_finished = self.current.copy()` with `ended_at` stamped,
+    and clear `self.current` (so a repeat-one completion does not pair a track
+    with itself). `cooccurrence_meta.last_built_at` is set to that play's
+    `ended_at` (not "now"), so live play does not make the matrix look stale
+    next startup and the stamp can never be newer than the play it covers.
+    If the play is **not completed** (whether a skip or a stop with
+    `completed=False, skipped=False`), clear **both** slots
     (`last_finished` and `current`) — any non-completed play breaks the session,
-    matching `build_from_history`.
-  Because pairing happens on `on_song_change` using the *last finished* track
-  and the *new* track, a track is never paired with itself.
+    matching `build_from_history`. Because pairing happens on completion rather
+    than at song change, a track is never paired with itself.
 
 - [ ] `build_from_history()` — rebuilds the matrix from `plays` rows using the
   same session rules above (completed plays, `< session_gap_seconds` gaps,
@@ -756,7 +758,7 @@ dst = os.path.join(d, 'recommendations')
 shutil.copytree('plugins/recommendations', dst)
 man = os.path.join(dst, 'config.json')
 m = json.load(open(man))
-m.setdefault('settings', {})['recommendations.scan_library_on_startup'] = False
+m.setdefault('settings', {}).setdefault('recommendations', {})['scan_library_on_startup'] = False
 json.dump(m, open(man, 'w'))
 db = os.path.join(d, 'test_play_stats.db')
 cfg_path = os.path.join(d, 'app_config.json')

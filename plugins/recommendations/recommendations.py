@@ -48,6 +48,12 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         # Track current artist for recommendations
         self._current_artist: Optional[str] = None
 
+        # Rebuild state: _building pauses live pair writes while a rebuild is
+        # computing the matrix; _pending_pairs holds pairs that arrived during
+        # the compute and are flushed into the freshly swapped matrix after.
+        self._building: bool = False
+        self._pending_pairs: List[Tuple[str, str]] = []
+
     # ------------------------------------------------------------------
     # Plugin lifecycle
     # ------------------------------------------------------------------
@@ -76,6 +82,13 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             raw_db = PlayStats.DEFAULT_DB_PATH
 
         self.db_path = os.path.expanduser(raw_db)
+
+        # Make sure the database's parent directory exists (it may not yet on
+        # a fresh install; PlayStats creates it lazily via __init__). See issue
+        # #15 finding 1: the plugin would otherwise fail to load the first run.
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
 
         # Open our own SQLite connection (same pattern as PlayStats)
         self._conn = sqlite3.connect(
@@ -108,7 +121,10 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if self._stop_event:
             self._stop_event.set()
         if self._bg_thread and self._bg_thread.is_alive():
+            # Worker thread still running; leave the connection open so it
+            # is not closed while a rebuild or library scan is in progress.
             self._bg_thread.join(timeout=5.0)
+            return
         if self._conn:
             self._conn.close()
             self._conn = None
@@ -172,12 +188,17 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if not self._stop_event:
             return
 
+        # Check staleness once, before the scan, so plays recorded while the
+        # (potentially slow) scan runs are not masked by stamps written during
+        # the scan. Rebuild afterwards if the check at startup said we needed one.
+        should_rebuild = self._should_rebuild()
+
         # 1. Library scan (populate album_songs)
         if self.scan_library_on_startup:
             self._scan_library_if_empty()
 
         # 2. Rebuild if matrix is stale (missing or older than latest play)
-        if self._should_rebuild():
+        if should_rebuild and not (self._stop_event and self._stop_event.is_set()):
             self.build_from_history()
 
         # Idle until shutdown
@@ -187,6 +208,8 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
     def _scan_library_if_empty(self) -> None:
         """Scan MPD library into album_songs if table is empty."""
         if not self.core or not hasattr(self.core, "list_all_info"):
+            return
+        if self._stop_event and self._stop_event.is_set():
             return
         cur = self._conn.cursor()
         cur.execute("SELECT COUNT(*) FROM album_songs")
@@ -208,12 +231,22 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                     continue
                 rows.append((path, album, artist, genre))
             if rows:
-                cur = self._conn.cursor()
-                cur.executemany(
-                    "INSERT OR REPLACE INTO album_songs (path, album, artist, genre) VALUES (?, ?, ?, ?)",
-                    rows,
-                )
-                self._conn.commit()
+                # One transaction: an interrupted scan must not leave a
+                # partial library behind (which would stick the next start-up
+                # on "table is not empty" and skip the rescan). See issue #15.
+                cur.execute("BEGIN IMMEDIATE")
+                try:
+                    cur.executemany(
+                        "INSERT OR REPLACE INTO album_songs (path, album, artist, genre) VALUES (?, ?, ?, ?)",
+                        rows,
+                    )
+                    cur.execute("COMMIT")
+                except Exception:
+                    try:
+                        cur.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
         except Exception:
             pass  # best effort
 
@@ -249,45 +282,23 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
 
         Writes into temp cooccurrence_new, atomically swaps into cooccurrence,
         stamps cooccurrence_meta.last_built_at = MAX(plays.ended_at).
-        Pauses live pair recording via lock during rebuild.
-        """
-        # Acquire lock to pause live writes
-        with self._rebuild_lock:
-            if self._stop_event and self._stop_event.is_set():
-                return
-            # Read all completed plays in chronological order
-            cur = self._conn.cursor()
-            cur.execute("""
-                SELECT artist, started_at, ended_at
-                FROM plays
-                WHERE ended_at IS NOT NULL AND artist IS NOT NULL AND artist != ''
-                ORDER BY started_at
-            """)
-            plays = cur.fetchall()
-            if not plays:
-                return
+        Live pair recording is paused while the swap runs; pairs recorded while
+        a rebuild computes are queued and flushed into the freshly swapped matrix.
 
-            # Get the max ended_at *at rebuild start* for staleness check
+        DB reads are done under the lock (fast); the heavy session logic runs
+        outside the lock so the Tk thread is not blocked.
+        """
+        if self._stop_event and self._stop_event.is_set():
+            return
+        if self._conn is None:
+            return
+
+        # Phase 1: read plays under the rebuild lock (fast DB access).
+        with self._rebuild_lock:
+            self._building = True
+            cur = self._conn.cursor()
             cur.execute("SELECT MAX(ended_at) FROM plays WHERE ended_at IS NOT NULL")
             max_ended_at = cur.fetchone()[0] or 0
-
-            # Build co-occurrence in temp table
-            cur.execute("DROP TABLE IF EXISTS cooccurrence_new")
-            cur.execute("""
-                CREATE TABLE cooccurrence_new (
-                    artist_a TEXT NOT NULL,
-                    artist_b TEXT NOT NULL,
-                    play_count INTEGER DEFAULT 1,
-                    PRIMARY KEY (artist_a, artist_b)
-                )
-            """)
-
-            # Session logic: gap < session_gap_seconds → pair; skip breaks session
-            # We select ALL plays (completed or not) in chronological order.
-            # A session is a run of completed plays with gap < session_gap_seconds
-            # between previous ended_at and next started_at.
-            # A play that is NOT completed (skip or stop, completed=0) breaks the session.
-
             cur.execute("""
                 SELECT artist, started_at, ended_at, completed
                 FROM plays
@@ -296,67 +307,112 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             """)
             all_plays = cur.fetchall()
 
+        try:
             if not all_plays:
-                # stamp and return
-                cur.execute(
-                    "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
-                    (max_ended_at,)
-                )
-                self._conn.commit()
-                return
+                # Nothing to rebuild: just stamp meta and return without touching
+                # cooccurrence, so pairs recorded concurrently by live hooks are
+                # never wiped by a no-op swap.
+                with self._rebuild_lock:
+                    cur = self._conn.cursor()
+                    cur.execute(
+                        "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
+                        (max_ended_at,)
+                    )
+                    self._conn.commit()
+                    self._building = False
+                    return
 
-            # Session grouping with skip-break logic
-            pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+            # Phase 2: compute pair counts outside the lock (in-memory session logic).
+            pair_counts = self._compute_pair_counts_from_plays(all_plays)
 
-            prev_ended = None
-            prev_artist = None
-
-            for artist, started_at, ended_at, completed in all_plays:
-                if completed:
-                    if prev_ended is not None and prev_artist is not None:
-                        gap = started_at - prev_ended
-                        if gap < self.session_gap_seconds:
-                            # canonical order
-                            a, b = (prev_artist, artist) if prev_artist < artist else (artist, prev_artist)
-                            if a != b:  # no same-artist pairs
-                                pair_counts[(a, b)] += 1
-                        else:
-                            # gap too large: new session
-                            pass
-                    # advance only on completed plays
-                    prev_ended = ended_at
-                    prev_artist = artist
-                else:
-                    # Any non-completed play (skip or stop) breaks the session
-                    prev_ended = None
-                    prev_artist = None
-
-            # Batch insert into temp table
-            if pair_counts:
-                rows = [(a, b, count) for (a, b), count in pair_counts.items()]
-                cur.executemany(
-                    "INSERT INTO cooccurrence_new (artist_a, artist_b, play_count) VALUES (?, ?, ?)",
-                    rows,
-                )
-
-            # Atomic swap: drop old table, rename temp table, stamp meta —
-            # all inside one transaction so readers never see a half-built matrix.
-            # On any error, ROLLBACK leaves the connection clean.
-            try:
-                cur.execute("BEGIN IMMEDIATE")
-                cur.execute("DROP TABLE IF EXISTS cooccurrence")
-                cur.execute("ALTER TABLE cooccurrence_new RENAME TO cooccurrence")
-                cur.execute(
-                    "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
-                    (max_ended_at,)
-                )
-                cur.execute("COMMIT")
-            except Exception:
+            # Phase 3: atomic swap — hold lock only for the swap.
+            with self._rebuild_lock:
+                if self._stop_event and self._stop_event.is_set():
+                    self._building = False
+                    return
+                cur = self._conn.cursor()
+                cur.execute("DROP TABLE IF EXISTS cooccurrence_new")
+                cur.execute("""
+                    CREATE TABLE cooccurrence_new (
+                        artist_a TEXT NOT NULL,
+                        artist_b TEXT NOT NULL,
+                        play_count INTEGER DEFAULT 1,
+                        PRIMARY KEY (artist_a, artist_b)
+                    )
+                """)
+                if pair_counts:
+                    rows = [(a, b, count) for (a, b), count in pair_counts.items()]
+                    cur.executemany(
+                        "INSERT INTO cooccurrence_new (artist_a, artist_b, play_count) VALUES (?, ?, ?)",
+                        rows,
+                    )
                 try:
-                    cur.execute("ROLLBACK")
+                    cur.execute("BEGIN IMMEDIATE")
+                    cur.execute("DROP TABLE IF EXISTS cooccurrence")
+                    cur.execute("ALTER TABLE cooccurrence_new RENAME TO cooccurrence")
+                    cur.execute(
+                        "REPLACE INTO cooccurrence_meta (id, last_built_at) VALUES (1, ?)",
+                        (max_ended_at,)
+                    )
+                    cur.execute("COMMIT")
                 except Exception:
-                    pass
-                raise
+                    try:
+                        cur.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+                # Flush pairs recorded while we were computing the matrix.
+                for a, b in self._pending_pairs:
+                    cur.execute(
+                        "INSERT INTO cooccurrence (artist_a, artist_b, play_count) VALUES (?, ?, 1) "
+                        "ON CONFLICT(artist_a, artist_b) DO UPDATE SET play_count = play_count + 1",
+                        (a, b)
+                    )
+                self._pending_pairs = []
+        finally:
+            with self._rebuild_lock:
+                self._building = False
+
+    def _compute_pair_counts_from_plays(
+        self, all_plays: List[Tuple[str, int, int, int]]
+    ) -> Dict[Tuple[str, str], int]:
+        """Compute co-occurrence pairs from a list of plays.
+
+        Args:
+            all_plays: List of (artist, started_at, ended_at, completed) tuples.
+
+        Returns:
+            Dict mapping (artist_a, artist_b) canonical pairs to play_count.
+        """
+        if not all_plays:
+            return defaultdict(int)
+
+        pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+
+        prev_ended = None
+        prev_artist = None
+
+        for artist, started_at, ended_at, completed in all_plays:
+            if completed:
+                if prev_ended is not None and prev_artist is not None:
+                    gap = started_at - prev_ended
+                    if gap < self.session_gap_seconds:
+                        # canonical order
+                        a, b = (prev_artist, artist) if prev_artist < artist else (artist, prev_artist)
+                        if a != b:  # no same-artist pairs
+                            pair_counts[(a, b)] += 1
+                    else:
+                        # gap too large: new session
+                        pass
+                # advance only on completed plays
+                prev_ended = ended_at
+                prev_artist = artist
+            else:
+                # Any non-completed play (skip or stop) breaks the session
+                prev_ended = None
+                prev_artist = None
+
+        return pair_counts
 
     # ------------------------------------------------------------------
     # Hook handlers (called by PluginManager.trigger_hook)
@@ -454,6 +510,13 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if a == b:
             return
         with self._rebuild_lock:
+            if self._stop_event and self._stop_event.is_set():
+                return
+            if self._building:
+                # A rebuild is computing the matrix; queue the pair and let
+                # build_from_history flush it after the atomic swap.
+                self._pending_pairs.append((a, b))
+                return
             if self._conn:
                 cur = self._conn.cursor()
                 cur.execute(
