@@ -862,16 +862,151 @@ testable in isolation.
 
 ---
 
+### Slice 3.1a: Touch Toolkit
+**Goal:** Gesture and scrolling widgets that any screen can reuse, so Slice 3.2 and later screens don't each build their own touch handling.
+
+**Why now:**
+- The Discover screen in Slice 3.2 needs scrollable lists of tracks, artists and albums.
+- The only drag scrolling in the app today belongs to the Stats screen. The handlers are at `ui/dashboard.py:468–503`, with per-label bindings up to `:635`, and the wheel handler starts at `:460`.
+- Slice 2.2 promised a swipe to open Stats, but it was never built.
+
+**Already in place (keep):**
+- `ui/styles.py` sets 48 px minimum touch targets.
+- `TouchWidget._apply_visual_feedback` already highlights a widget while it is pressed, using `COLORS["accent"]`.
+
+**Target Date:** TBD (after Slice 3.1)
+**Estimated Effort:** 5 days
+
+### Code Deliverables
+- [ ] `ui/gestures.py` — `GestureRecognizer`, written as pure Python with no Tk imports, so it can be unit-tested without a display.
+  - **Input:**
+    - `press(x, y, t)`, `move(x, y, t)` and `release(x, y, t)`, with `t` in seconds from a monotonic clock that the caller supplies.
+    - `timeout(t)`, which the adapter calls when the long-press timer fires. The recognizer never schedules anything itself.
+  - **Output contract, per press:**
+    - first, zero or more `drag_move(dx, dy)` events;
+    - then **exactly one** final event: `tap`, `long_press`, `drag_end(vx, vy)` or `swipe(direction, velocity)`.
+  - **Tap:** total movement stays under `TAP_SLOP` (10 px), and the finger lifts before `LONG_PRESS_MS`.
+  - **Long press:** `timeout()` arrives at least `LONG_PRESS_MS` (500 ms) after the press, and movement has stayed within `TAP_SLOP`. It fires while the finger is still down. The release that follows produces nothing more.
+  - **Drag:** once movement passes `TAP_SLOP`, the press becomes a drag. After that, no tap or long press can fire.
+  - **Swipe:** a drag that is released with all of the following:
+    - horizontal movement of at least `SWIPE_MIN_PX` (80 px, or 10% of the window width if that is larger);
+    - a duration under `SWIPE_MAX_MS` (400 ms);
+    - `|dx| > 2·|dy|`.
+
+    Directions are `left` and `right`. Any other drag ends as `drag_end`.
+  - All thresholds live in `ui/styles.py` as a `GESTURE` dict.
+- [ ] `ui/gestures.py` — `bind_gestures(widget, recognizer, on_event, exclude=())`, a thin Tk adapter.
+  - **Bindings:** it binds `<ButtonPress-1>`, `<B1-Motion>` and `<ButtonRelease-1>` with `add="+"`, on `widget` **and every descendant**.
+    - X11 sends motion and release events only to the widget that was pressed (an implicit grab), so binding only the parent would miss presses that start on a child.
+    - It never binds on the root window or on the `all` bindtag.
+    - Widgets in `exclude` are skipped, along with their descendants. The `ProgressBar`, which seeks on `<Button-1>`, is always excluded.
+  - **Coordinates:** converts each event to root coordinates (`event.x_root`, `event.y_root`). `Dashboard._canvas_coords` (added in PR #9, `5835b74`) converts to canvas-local coordinates instead, so it is not reused here.
+  - **Timestamps:** uses `time.monotonic()` read inside each handler, not `event.time`. The `event.time` value is in milliseconds, wraps around at 32 bits (about every 49.7 days), and is 0 for `event_generate`, which the tests rely on.
+  - **Long press:** on press it starts `widget.after(LONG_PRESS_MS, lambda: recognizer.timeout(time.monotonic()))`, and it cancels that timer on drag or release.
+  - **Stopping the button firing.** As soon as the recognizer reports a drag or a long press, the adapter calls `set_pressed_state(False)` on any `TouchButton`/`TouchWidget` under the press.
+    - Today, `TouchButton._on_release` runs its command whenever `_is_pressed` is still set, and only `_on_leave` clears it (`ui/widget.py:119–123`).
+    - In a scrolling list the button moves with the finger, so the finger never "leaves" it. Without this step, the command would fire at the end of every drag.
+- [ ] `ui/widget.py` — `ScrollList(tk.Frame)`, a vertical list with drag scrolling and momentum.
+  - API: `set_items(items, render_row)`, `scroll_to_top()`, `on_select(callback)` (fires on `tap` only) and `on_swipe(callback)` (passes a horizontal swipe up to the screen).
+  - Built on a `tk.Canvas` with `yscrollincrement=1`, holding an inner frame. Both dragging and momentum use `yview_scroll(n, "units")`, so one unit is one pixel. The fractional remainder is carried between frames, and rows are never redrawn.
+  - **Momentum:**
+    - On `drag_end`, scrolling carries on at the release speed, multiplied by `FRICTION` (0.90) each frame.
+    - Frames run every `FRAME_MS` (33 ms) via `after()`. Scrolling stops below 0.5 px per frame, or when it reaches either end of the list.
+    - A new press cancels momentum immediately.
+    - The speed step is a pure function in `ui/gestures.py`, so it can be tested without a display.
+  - **Mouse wheel:** keep `<MouseWheel>` for Windows and macOS, and add `<Button-4>` / `<Button-5>` for X11 (the Pi). Today only `<MouseWheel>` is bound (`ui/dashboard.py:470–471`), and it never fires on X11.
+  - **Large lists:** fine up to about 200 rows. For bigger libraries, Slice 3.2 shows the first 200 plus a "More" row, rather than building thousands of widgets on a Pi Zero.
+- [ ] `ui/dashboard.py` — move the Stats screen onto `ScrollList`.
+  - Delete `_on_stats_drag_start` and `_on_stats_drag_move`, the per-label drag bindings and the old wheel handler.
+  - Keep `_canvas_coords` only if something still uses it.
+- [ ] `ui/dashboard.py` — swipe navigation.
+  - **Where swipes are recognized:**
+    - on Now Playing, through `bind_gestures` on the main content frame (the `ProgressBar` is excluded);
+    - on list screens, through `ScrollList.on_swipe`. Vertical drags scroll the list, and only a drag that passes the swipe test navigates.
+  - **Directions:**
+    - swipe left goes from Now Playing to Stats (and to Discover, once Slice 3.2 adds it);
+    - swipe right goes back.
+  - The existing buttons stay, so every action still works without gestures.
+- *Moved to Slice 3.2:* long press on Play/Pause to show the queue. That needs a new screen, and the queue is Slice 3.2's subject. This slice delivers long-press recognition and its tests, and the button suppression above, so 3.2 can use it safely.
+
+### Documentation Deliverables
+- [ ] Rewrite `docs/usage/touch-gestures.md` to match what is built.
+  - Tkinter receives touch as single-pointer mouse events, so remove the multi-touch claims and the "swipe intensity" and edge-swipe sections.
+  - Remove the settings at `:248–253`. None of them exist in `core/config.py`.
+  - Keep tap, long press, drag scrolling with momentum, and left/right swipe. Mark anything still planned as *Planned*.
+- [ ] New `docs/development/ui-widgets.md`, explaining how new screens use `ScrollList` and `bind_gestures`, including the `exclude` rule for widgets that handle their own presses.
+- [ ] `docs/development/testing.md` — add `tests/test_slice_3_1a.py` to the Test Layout table.
+
+### Test Plan
+```bash
+# Headless: gesture logic and momentum, no display needed
+python -m unittest tests.test_slice_3_1a -v
+
+# Full suite (the dashboard tests need a display; see testing.md)
+xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
+
+# Manual on the Pi touchscreen:
+# - Flick the Stats list: it keeps scrolling briefly, then slows to a stop
+# - Touch while it is scrolling: it stops at once
+# - Drag starting on a row button: the list scrolls and the button does NOT fire
+# - Tap a row: it fires once
+# - Swipe left on Now Playing: Stats opens; swipe right: back
+# - Drag along the progress bar: it seeks and does NOT navigate
+# - A slow sideways drag (> 400 ms) does NOT count as a swipe
+# - Mouse wheel scrolls the Stats list under X11
+```
+
+**Headless gesture tests.** `tests/test_slice_3_1a.py` feeds synthetic `(x, y, t)` sequences, plus `timeout(t)` calls, into `GestureRecognizer`. It needs no display. It covers:
+- a press that stays under the slop distance;
+- a 520 ms hold, with the timeout delivered while the finger is down;
+- a drag past the slop distance;
+- fast and slow horizontal moves;
+- diagonal moves that fail the `|dx| > 2·|dy|` test.
+
+For every sequence it asserts the contract: zero or more `drag_move` events, then exactly one final event.
+
+**Momentum tests** treat the speed step as a pure function. They check the speed after N frames, the stopping point, the clamping at the list ends, and that a new press cancels the scroll.
+
+**Tk adapter test.** One test drives the adapter with `event_generate` on a `ScrollList` whose row is a `TouchButton`. It asserts that a press, motion and release sequence scrolls the list and does **not** call the button's command. Like the existing dashboard tests, it needs a display.
+
+### Acceptance Criteria
+- [ ] All gesture unit tests pass, and the existing suites stay green.
+- [ ] **Momentum smoothness on the Pi.** With a debug frame-timing log enabled, a flick on the Stats list with 200 rows meets both targets:
+  - median frame interval ≤ 40 ms;
+  - 95th percentile ≤ 70 ms.
+- [ ] No tap fires at the end of a drag, on rows or on buttons.
+- [ ] Swipe navigation works in both directions and never fires from the progress bar. Every gesture action still has a button.
+- [ ] **Memory check:** the app's memory use stays within the Phase 3 budget (40 MB) with a 200-row `ScrollList` open.
+
+### Dependencies
+- Requires: Slice 1.5 (dashboard and `TouchWidget`), Slice 2.2 (Stats screen being migrated).
+- Blocks: Slice 3.2 (Discover lists use `ScrollList`; long press opens the queue).
+
+### Notes / Risks
+- Risk: X11's implicit grab means a binding on a parent never sees a drag that starts on a child.
+  - Mitigation: `bind_gestures` binds every descendant with `add="+"`, and the Tk adapter test covers a drag that starts on a button.
+- Risk: building a widget per row is too slow for large libraries on a Pi Zero.
+  - Mitigation: the 200-row cap with a "More" row. If the frame targets fail at 200 rows, switch to drawing rows as canvas items.
+- Risk: the swipe and vertical-scroll tests disagree near the diagonal.
+  - Mitigation: the `|dx| > 2·|dy|` test leaves a dead zone, so a diagonal move scrolls and never navigates.
+
+---
+
 ### Slice 3.2: Discovery Features in UI
 **Goal:** Surface recommendations in the dashboard
+
+**Requires:** Slice 3.1, Slice 3.1a
 
 #### Deliverables
 - New "Discover" screen:
   - **"Play Similar"** button on Now Playing → queues similar tracks
   - **"Genre Radio"** — pick genre, plays endless shuffle
   - **"Revisit"** — albums you haven't played in 30+ days
-  - **"New to You"** — artists in library but never played (via MPD `list albumartist`)
+  - **"New to You"** — artists in library but never played (via the library scan from Slice 3.1, MPD `listallinfo`)
 - "Add to Queue" / "Play Next" actions
+- Discover lists use `ScrollList`, and Discover is reachable by swiping (Slice 3.1a)
+- Long press on Play/Pause opens the queue view, using the `long_press` recognition from
+  Slice 3.1a. Releasing after a long press must not toggle playback.
 
 #### Test Criteria
 ```bash
@@ -959,6 +1094,87 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 ## Phase 5: Polish & Niche Features
 
+### Slice 5.0: Config-Driven Themes
+**Goal:** Colours and text sizes come from `config.json` instead of constants, with three built-in themes. Car Mode's night mode reuses a theme instead of having its own tint.
+
+**Current state:**
+- `ui/styles.py` hard-codes `COLORS`, `FONTS` and `TOUCH_TARGET_SIZE` (an int).
+- `core/config.py:32` already has `ui.theme: "dark"`, but nothing reads it. `Config` deep-merges user values over defaults and does **no** validation.
+- **Colour defaults are fixed when the module is imported.** `TouchButton.__init__` takes `bg: str = COLORS["card_bg"]` and similar defaults (`ui/widget.py:82–85`), and Python evaluates them once, at import. Changing `COLORS` afterwards never reaches those defaults.
+- **The touch size can't change in place either.** `TOUCH_TARGET_SIZE` is an int, and each importing module holds its own copy (`ui/widget.py:22, 23, 98, 99, 349, 350`).
+- **Fixed sizes block bigger text.** `ui/dashboard.py:164`, `:178` and `:203` hard-code sizes (album art and others), so `large_text` would clip at 800×480 unless those scale too.
+- **The dashboard can't be rebuilt in place.** `Dashboard` *is* the Tk root (`class Dashboard(tk.Tk)`, `ui/dashboard.py:77`), and its widgets are gridded straight onto it, with no inner frame that could be destroyed and rebuilt.
+
+**Target Date:** TBD (Phase 5)
+**Estimated Effort:** 4 days
+
+### Code Deliverables
+- [ ] `ui/styles.py` — a `THEMES` dict with three themes:
+  - `dark` holds today's values and is the default, matching the existing `ui.theme: "dark"`. `default` is accepted as an alias.
+  - `night` is a dim, red-shifted palette for dark rooms and cars.
+  - `large_text` uses the dark colours, fonts about 1.4× larger, and a touch target of 64.
+- [ ] `ui/styles.py` — replace the int `TOUCH_TARGET_SIZE` with a `TOUCH` dict (`{"target": 48, …}`), and update its six uses in `ui/widget.py`.
+- [ ] `ui/styles.py` — a `SIZES` dict for the fixed sizes at `ui/dashboard.py:164`, `:178` and `:203`. These scale with the theme and `font_scale`.
+- [ ] `ui/widget.py` — no colour or size defaults evaluated at import.
+  - Change the `TouchButton` (and any similar) parameters to `bg=None, fg=None, active_bg=None, active_fg=None`, and look them up in the body: `bg = COLORS["card_bg"] if bg is None else bg`.
+- [ ] `ui/styles.py` — `apply_theme(name, overrides=None, font_scale=1.0)`.
+  - **Updates in place:** it updates `COLORS`, `SIZES` and `TOUCH` with `.clear()` and `.update()`, so existing `from ui.styles import COLORS` imports stay valid.
+  - **Validation:** this is the only place theme settings are checked, because `Config` does none.
+    - An unknown theme name logs a warning and falls back to `dark`.
+    - `font_scale` is clamped to 0.75–2.0, with a warning.
+    - A colour override that isn't `#rrggbb`, or names an unknown key, is ignored with a warning.
+  - Must be called before any widget is created.
+- [ ] `ui/styles.py` — fonts become named `tkinter.font.Font` objects.
+  - `init_fonts(root)` creates them once the Tk root exists, and `FONTS` maps names to those objects.
+  - `set_font_scale(scale)` calls `font.configure(size=…)` on each one, and Tk redraws every widget that uses them **while the app runs**, with no rebuild needed.
+- [ ] `core/config.py` — new defaults next to the existing `ui.theme: "dark"`:
+  - `ui.colors: {}`, for per-colour overrides such as `{"accent": "#ff8800"}`;
+  - `ui.font_scale: 1.0`.
+- [ ] `main.py` — call `apply_theme(config.get("ui.theme"), config.get("ui.colors"), config.get("ui.font_scale"))` **before** `run_dashboard()`. `Dashboard.__init__` then calls `init_fonts(self)`.
+- [ ] **Switching themes:**
+  - The Settings screen writes `ui.theme` to the config, and the new colours take effect after a restart, with a "Restart to apply" prompt.
+  - Text size (`font_scale`) applies live through the named fonts.
+  - Live colour switching is **out of scope**. It would need every widget recoloured or the screen rebuilt, which the current `Dashboard` structure doesn't support.
+
+### Documentation Deliverables
+- [ ] `docs/usage/dashboard-guide.md` — a themes section covering the config keys, the three themes, which settings apply live (text size) and which after a restart (theme, colours).
+- [ ] README feature table — add "Themes".
+
+### Test Plan
+```bash
+python -m unittest tests.test_slice_5_0 -v      # Tk tests skip without a display
+xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
+```
+
+**Tests that need no display:**
+- `apply_theme("night")` changes the `COLORS` object that `ui.widget` imported: the same object, with new values.
+- `TOUCH["target"]` is 64 after `apply_theme("large_text")`.
+- An unknown theme name falls back to `dark`, and `default` is treated as `dark`.
+- `font_scale` 3.0 is clamped to 2.0, and a bad colour override is ignored. Each logs a warning.
+
+**Tests that need Tk.** These are decorated with `unittest.skipUnless(_tk_available(), …)`, where `_tk_available()` tries `tk.Tk()`. That way the single-file command passes headless, and `xvfb-run` runs them in full.
+- After `apply_theme("night")`, a newly created `TouchButton` has `cget("bg") == COLORS["card_bg"]`, using night's value.
+- `set_font_scale(1.5)` changes the size of every named font, and a label using one of them reports the new size.
+
+### Acceptance Criteria
+- [ ] All three themes render on the Pi at 800×480 without clipped text, including `large_text`.
+- [ ] Changing the text size in Settings applies immediately, without interrupting playback.
+- [ ] Changing the theme applies after a restart, and the restart closes the current play row cleanly through the normal shutdown.
+- [ ] An existing `config.json` with `ui.theme: "dark"` behaves exactly as before.
+- [ ] **Memory check:** usage stays within the Phase 5 budget (50 MB).
+
+### Dependencies
+- Requires: Slice 1.4 (config defaults), Slice 1.5 (dashboard and widgets).
+- Blocks: Slice 5.3 (Car Mode uses the `night` theme).
+
+### Notes / Risks
+- Risk: a widget added later uses a colour as a default argument again, so themes stop reaching it.
+  - Mitigation: the `cget("bg")` test, plus a note in `docs/development/ui-widgets.md`.
+- Risk: users expect the theme to change immediately.
+  - Mitigation: the Settings screen says "Restart to apply". Live recolouring can be its own slice if it's wanted.
+
+---
+
 ### Slice 5.1: Sleep Timer & Fade-Out
 - Background thread: after N minutes, fade volume over 60s then pause
 - UI: timer picker (15/30/45/60/90/120 min)
@@ -971,7 +1187,8 @@ curl -X POST -H "Authorization: Bearer <token>" \
 ### Slice 5.3: Car Mode
 - Simplified UI: 4 giant buttons (Play/Pause, Next, Prev, Home)
 - Auto-enable when Bluetooth device "CarKit" connects
-- Night mode (red tint) after sunset
+- Use the `night` theme (Slice 5.0) after sunset. Themes apply at startup, so either choose
+  the theme at launch, or add live recolouring in this slice.
 
 ### Slice 5.4: Battery/Power Monitoring
 - Read `/sys/class/power_supply/*/capacity` for battery %
@@ -1018,6 +1235,7 @@ pyinstaller --onefile --name pi-music-player main.py
 | 8 | 2.2 | See your data |
 | 8a | 2.3 | Harden plugins before building more on them |
 | 9 | 3.1 | Recommendations need stats |
+| 9a | 3.1a | Touch toolkit before building more screens |
 | 10 | 3.2 | Surface recommendations |
 | 11 | 4.1 | Remote is force multiplier for testing |
 | 12 | 5.x | Polish features as desired |
@@ -1033,6 +1251,7 @@ pyinstaller --onefile --name pi-music-player main.py
 | Album art web API changes | Low | Medium | Graceful degradation; local-only works |
 | SQLite corruption on power loss | Low | Medium | WAL mode + periodic vacuum |
 | Pi Zero thermal throttling | Medium | Low | Profile memory/CPU; avoid heavy libs |
+| Tkinter has no multi-touch or gesture support | Certain | Medium | Single-pointer gestures in ui/gestures.py (Slice 3.1a); docs promise only what is built; revisit Pygame/SDL only if dropping X11 |
 
 ---
 
