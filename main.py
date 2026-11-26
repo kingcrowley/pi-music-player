@@ -87,6 +87,10 @@ def main() -> int:
     )
     connected = player.connect()
 
+    # Attach app config to player so plugins can read app-level settings
+    # (e.g. stats.db_path). MusicPlayer itself has no config attribute.
+    player.config = config
+
     print(f"\nConnection status: {connected}")
     if not connected:
         print("❌ Could not connect to MPD. Is MPD running?")
@@ -116,6 +120,7 @@ def main() -> int:
         artwork_cache=cache,
         config=config,
         fullscreen=config.get("ui.fullscreen", True),
+        plugin_manager=plugin_mgr,
     )
 
     # Cleanup

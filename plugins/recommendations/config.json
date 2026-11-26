@@ -1,0 +1,45 @@
+{
+  "plugin_id": "recommendations",
+  "name": "Recommendations",
+  "version": "0.1.0",
+  "description": "Local co-occurrence model for music recommendations",
+  "author": "Pi Music Player Team",
+  "email": "",
+  "license": "MIT",
+  "homepage": "",
+  "type": "feature",
+  "capabilities": ["recommendations"],
+  "required_core_version": "1.0.0",
+  "dependencies": [],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "recommendations": {
+        "type": "object",
+        "properties": {
+          "session_gap_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 300,
+            "description": "Maximum gap in seconds between tracks in the same listening session"
+          },
+          "scan_library_on_startup": {
+            "type": "boolean",
+            "default": true,
+            "description": "Scan MPD library at startup to populate album_songs for genre radio"
+          }
+        },
+        "required": ["session_gap_seconds", "scan_library_on_startup"]
+      }
+    },
+    "required": ["recommendations"]
+  },
+  "settings": {
+    "recommendations": {
+      "session_gap_seconds": 300,
+      "scan_library_on_startup": true
+    }
+  },
+  "auto_load": true
+}

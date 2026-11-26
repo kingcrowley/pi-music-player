@@ -86,12 +86,14 @@ class Dashboard(tk.Tk):
         artwork_cache: ArtworkCache,
         config: Config,
         fullscreen: bool = True,
+        plugin_manager: Any = None,
     ):
         super().__init__()
 
         self.music_player = music_player
         self.artwork_cache = artwork_cache
         self.config = config
+        self.plugin_manager = plugin_manager
 
         # Window setup
         self.title("Music Player")
@@ -306,6 +308,20 @@ class Dashboard(tk.Tk):
             try:
                 self._stats.record_play_end(completed=False)
                 self._play_row_active = False
+                # Trigger on_playback_complete hook for plugins
+                if self._current_song:
+                    self._trigger_hook(
+                        "on_playback_complete",
+                        {
+                            "artist": self._current_song.get("artist", "").strip(),
+                            "album": self._current_song.get("album", "").strip(),
+                            "title": self._current_song.get("title", "").strip(),
+                            "path": self._current_song.get("file", "").strip(),
+                            "started_at": int(time.time()),
+                        },
+                        completed=False,
+                        skipped=False,
+                    )
             except Exception:
                 pass
 
@@ -316,6 +332,20 @@ class Dashboard(tk.Tk):
             try:
                 self._stats.record_play_end(skipped=True)
                 self._play_row_active = False
+                # Trigger on_playback_complete hook for plugins
+                if self._current_song:
+                    self._trigger_hook(
+                        "on_playback_complete",
+                        {
+                            "artist": self._current_song.get("artist", "").strip(),
+                            "album": self._current_song.get("album", "").strip(),
+                            "title": self._current_song.get("title", "").strip(),
+                            "path": self._current_song.get("file", "").strip(),
+                            "started_at": int(time.time()),
+                        },
+                        completed=False,
+                        skipped=True,
+                    )
             except Exception:
                 pass
 
@@ -326,6 +356,20 @@ class Dashboard(tk.Tk):
             try:
                 self._stats.record_play_end(skipped=True)
                 self._play_row_active = False
+                # Trigger on_playback_complete hook for plugins
+                if self._current_song:
+                    self._trigger_hook(
+                        "on_playback_complete",
+                        {
+                            "artist": self._current_song.get("artist", "").strip(),
+                            "album": self._current_song.get("album", "").strip(),
+                            "title": self._current_song.get("title", "").strip(),
+                            "path": self._current_song.get("file", "").strip(),
+                            "started_at": int(time.time()),
+                        },
+                        completed=False,
+                        skipped=True,
+                    )
             except Exception:
                 pass
 
@@ -846,6 +890,20 @@ class Dashboard(tk.Tk):
                         self._stats.record_play_end(completed=completed, skipped=False)
                     except Exception as e:
                         logger.warning("record_play_end failed: %s", e)
+                    # Trigger on_playback_complete hook for plugins
+                    if self._current_song:
+                        self._trigger_hook(
+                            "on_playback_complete",
+                            {
+                                "artist": self._current_song.get("artist", "").strip(),
+                                "album": self._current_song.get("album", "").strip(),
+                                "title": self._current_song.get("title", "").strip(),
+                                "path": self._current_song.get("file", "").strip(),
+                                "started_at": int(time.time()),
+                            },
+                            completed=completed,
+                            skipped=False,
+                        )
                     self._play_row_active = False
                     self._maybe_cleanup()
                 self._current_song = None
@@ -876,6 +934,20 @@ class Dashboard(tk.Tk):
                 logger.warning("record_play_end failed: %s", e)
             self._play_row_active = False
             self._maybe_cleanup()
+            # Trigger on_playback_complete hook for plugins
+            if self._current_song:
+                self._trigger_hook(
+                    "on_playback_complete",
+                    {
+                        "artist": self._current_song.get("artist", "").strip(),
+                        "album": self._current_song.get("album", "").strip(),
+                        "title": self._current_song.get("title", "").strip(),
+                        "path": self._current_song.get("file", "").strip(),
+                        "started_at": int(time.time()),
+                    },
+                    completed=completed,
+                    skipped=not completed,
+                )
 
         # Open a new row only when playback is actually active (state ==
         # "playing"). Stopped/paused tracks never open a row.
@@ -904,6 +976,32 @@ class Dashboard(tk.Tk):
             self._current_song = song
             self._update_track_info(song)
             self._fetch_album_art(song)
+            # Trigger on_song_change hook for plugins (e.g. recommendation engine)
+            self._trigger_hook(
+                "on_song_change",
+                {
+                    "artist": song.get("artist", "").strip(),
+                    "album": song.get("album", "").strip(),
+                    "title": song.get("title", "").strip(),
+                    "path": song.get("file", "").strip(),
+                    "started_at": int(time.time()),
+                },
+            )
+
+    def _trigger_hook(self, event_name: str, *args, **kwargs) -> None:
+        """Trigger an event hook on the plugin manager (if present).
+
+        Plugins register hooks via MusicPlayerPlugin.register_hook(), and
+        PluginManager.trigger_hook dispatches them. This is a thin wrapper
+        so the dashboard doesn't need to know about the plugin manager's
+        internal dispatch path.
+        """
+        if self.plugin_manager is None:
+            return
+        try:
+            self.plugin_manager.trigger_hook(event_name, *args, **kwargs)
+        except Exception as e:
+            logger.warning("trigger_hook(%s) failed: %s", event_name, e)
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS or HH:MM:SS."""
@@ -1025,9 +1123,10 @@ def run_dashboard(
     artwork_cache: ArtworkCache,
     config: Config,
     fullscreen: bool = True,
+    plugin_manager: Any = None,
 ) -> None:
     """Create and run the dashboard."""
-    app = Dashboard(music_player, artwork_cache, config, fullscreen)
+    app = Dashboard(music_player, artwork_cache, config, fullscreen, plugin_manager)
     app.mainloop()
 
 

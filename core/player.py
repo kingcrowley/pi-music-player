@@ -426,6 +426,41 @@ class MusicPlayer:
                 self.client.clear()
         return self._execute_with_retry(_do_clear)
 
+    def list_all_info(self) -> list:
+        """List every track in the MPD library with metadata.
+
+        Wraps MPD's `listallinfo` command, which returns one entry per file
+        with the fields needed by the recommendation plugin:
+        path, artist, album, title, genre, time.
+
+        Returns:
+            List of per-track dicts with keys path, artist, album, title,
+            genre, time. Empty list on failure or when MPD has no library.
+        """
+        def _do_listallinfo():
+            """Fetch the full MPD library listing."""
+            if self.client:
+                return self.client.listallinfo()
+            return []
+
+        result = self._execute_with_retry(_do_listallinfo)
+        if result is False:
+            return []
+        # Normalize: MPD returns tags as lists for multi-value genres; convert to strings
+        # Directory entries have no 'file' key — skip them
+        normalized = []
+        for entry in result or []:
+            if "file" not in entry:
+                continue
+            clean = {}
+            for k, v in entry.items():
+                if isinstance(v, list):
+                    clean[k] = ", ".join(str(x) for x in v)
+                else:
+                    clean[k] = str(v)
+            normalized.append(clean)
+        return normalized or []
+
 
 # Import-friendly alias for backward compatibility
 # Note: MPDClient refers to the external library class (imported as LibMPDClient)

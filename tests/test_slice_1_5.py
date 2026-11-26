@@ -197,7 +197,9 @@ class Slice15TestCase(unittest.TestCase):
         import tkinter as tk
         root = tk.Tk()
         try:
-            mgr = PluginManager(core_engine=root, plugin_dir="plugins")
+            tmpdir = tempfile.mkdtemp()
+            self.tmpdirs.append(tmpdir)
+            mgr = PluginManager(core_engine=root, plugin_dir=tmpdir)
             mgr.load_plugins()
             plugins = mgr.get_all_plugins()
             self.assertTrue(plugins == [], "PluginManager returns empty list when no plugins")
