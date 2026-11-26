@@ -881,15 +881,21 @@ testable in isolation.
 - [ ] `ui/gestures.py` — `GestureRecognizer`, written as pure Python with no Tk imports, so it can be unit-tested without a display.
   - **Input:**
     - `press(x, y, t)`, `move(x, y, t)` and `release(x, y, t)`, with `t` in seconds from a monotonic clock that the caller supplies.
+    - `GestureRecognizer(width_fn)`: `width_fn()` returns the current window width in pixels. The recognizer reads it at release time to work out the swipe threshold, so a resized window is handled. The adapter passes `lambda: root.winfo_width()`, and tests pass a constant.
     - `timeout(t)`, which the adapter calls when the long-press timer fires. The recognizer never schedules anything itself.
   - **Output contract, per press:**
     - first, zero or more `drag_move(dx, dy)` events;
     - then **exactly one** final event: `tap`, `long_press`, `drag_end(vx, vy)` or `swipe(direction, velocity)`.
-  - **Tap:** total movement stays under `TAP_SLOP` (10 px), and the finger lifts before `LONG_PRESS_MS`.
-  - **Long press:** `timeout()` arrives at least `LONG_PRESS_MS` (500 ms) after the press, and movement has stayed within `TAP_SLOP`. It fires while the finger is still down. The release that follows produces nothing more.
-  - **Drag:** once movement passes `TAP_SLOP`, the press becomes a drag. After that, no tap or long press can fire.
+  - **Slop boundary:** movement up to and including `TAP_SLOP` (10 px) counts as "not moved". A press becomes a drag only when movement is **greater than** `TAP_SLOP`.
+  - **Long press:** `timeout(t)` arrives with `t - press_t >= LONG_PRESS_MS` (500 ms) and movement still ≤ `TAP_SLOP`. It fires while the finger is still down. The release that follows produces nothing more.
+  - **Tap or late long press:** a release that is not part of a drag, and comes before any `long_press` has fired, is classified on release:
+    - `long_press` if `t - press_t >= LONG_PRESS_MS`. This covers a timer that ran late because Tk was busy;
+    - `tap` otherwise.
+
+    So every non-drag release produces exactly one final event, and a late timer arriving after the release is ignored.
+  - **Drag:** once movement is greater than `TAP_SLOP`, the press becomes a drag. After that, no tap or long press can fire.
   - **Swipe:** a drag that is released with all of the following:
-    - horizontal movement of at least `SWIPE_MIN_PX` (80 px, or 10% of the window width if that is larger);
+    - horizontal movement of at least `max(SWIPE_MIN_PX, 0.10 × width_fn())`, where `SWIPE_MIN_PX` is 80 px;
     - a duration under `SWIPE_MAX_MS` (400 ms);
     - `|dx| > 2·|dy|`.
 
@@ -959,6 +965,9 @@ xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
 **Headless gesture tests.** `tests/test_slice_3_1a.py` feeds synthetic `(x, y, t)` sequences, plus `timeout(t)` calls, into `GestureRecognizer`. It needs no display. It covers:
 - a press that stays under the slop distance;
 - a 520 ms hold, with the timeout delivered while the finger is down;
+- a 520 ms hold released **before** the timeout is delivered (late timer), which gives `long_press` on release, and a timeout that arrives after the release, which gives nothing;
+- movement of exactly 10 px (`tap`), and of 11 px (drag);
+- the same 100 px horizontal flick with `width_fn` returning 800 (`swipe`) and 1200 (`drag_end`, since the threshold is 120 px);
 - a drag past the slop distance;
 - fast and slow horizontal moves;
 - diagonal moves that fail the `|dx| > 2·|dy|` test.
@@ -1114,7 +1123,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
   - `night` is a dim, red-shifted palette for dark rooms and cars.
   - `large_text` uses the dark colours, fonts about 1.4× larger, and a touch target of 64.
 - [ ] `ui/styles.py` — replace the int `TOUCH_TARGET_SIZE` with a `TOUCH` dict (`{"target": 48, …}`), and update its six uses in `ui/widget.py`.
-- [ ] `ui/styles.py` — a `SIZES` dict for the fixed sizes at `ui/dashboard.py:164`, `:178` and `:203`. These scale with the theme and `font_scale`.
+- [ ] `ui/styles.py` — a `SIZES` dict for the fixed sizes at `ui/dashboard.py:164`, `:178` and `:203`. `apply_theme()` works them out **once at startup** from the theme and `font_scale`. Widgets read them only when they are built, so they keep those values until the next start.
 - [ ] `ui/widget.py` — no colour or size defaults evaluated at import.
   - Change the `TouchButton` (and any similar) parameters to `bg=None, fg=None, active_bg=None, active_fg=None`, and look them up in the body: `bg = COLORS["card_bg"] if bg is None else bg`.
 - [ ] `ui/styles.py` — `apply_theme(name, overrides=None, font_scale=1.0)`.
@@ -1127,17 +1136,19 @@ curl -X POST -H "Authorization: Bearer <token>" \
 - [ ] `ui/styles.py` — fonts become named `tkinter.font.Font` objects.
   - `init_fonts(root)` creates them once the Tk root exists, and `FONTS` maps names to those objects.
   - `set_font_scale(scale)` calls `font.configure(size=…)` on each one, and Tk redraws every widget that uses them **while the app runs**, with no rebuild needed.
+  - **Text only:** a live change resizes text, but not the layout sizes in `SIZES`. It also writes `ui.font_scale` to the config, so the layout sizes catch up on the next start.
+  - **Clipping:** at 800×480, text can clip between a live increase and that restart. The Settings screen says "Layout adjusts after restart". Re-laying out existing widgets live is out of scope.
 - [ ] `core/config.py` — new defaults next to the existing `ui.theme: "dark"`:
   - `ui.colors: {}`, for per-colour overrides such as `{"accent": "#ff8800"}`;
   - `ui.font_scale: 1.0`.
 - [ ] `main.py` — call `apply_theme(config.get("ui.theme"), config.get("ui.colors"), config.get("ui.font_scale"))` **before** `run_dashboard()`. `Dashboard.__init__` then calls `init_fonts(self)`.
 - [ ] **Switching themes:**
   - The Settings screen writes `ui.theme` to the config, and the new colours take effect after a restart, with a "Restart to apply" prompt.
-  - Text size (`font_scale`) applies live through the named fonts.
+  - Text size (`font_scale`) applies live through the named fonts. Layout sizes (`SIZES`) follow on the next restart.
   - Live colour switching is **out of scope**. It would need every widget recoloured or the screen rebuilt, which the current `Dashboard` structure doesn't support.
 
 ### Documentation Deliverables
-- [ ] `docs/usage/dashboard-guide.md` — a themes section covering the config keys, the three themes, which settings apply live (text size) and which after a restart (theme, colours).
+- [ ] `docs/usage/dashboard-guide.md` — a themes section covering the config keys, the three themes, which settings apply live (text size) and which after a restart (theme, colours, layout sizes).
 - [ ] README feature table — add "Themes".
 
 ### Test Plan
@@ -1158,7 +1169,7 @@ xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
 
 ### Acceptance Criteria
 - [ ] All three themes render on the Pi at 800×480 without clipped text, including `large_text`.
-- [ ] Changing the text size in Settings applies immediately, without interrupting playback.
+- [ ] Changing the text size in Settings resizes text immediately, without interrupting playback. After a restart, every `font_scale` from 0.75 to 2.0 renders at 800×480 without clipped text.
 - [ ] Changing the theme applies after a restart, and the restart closes the current play row cleanly through the normal shutdown.
 - [ ] An existing `config.json` with `ui.theme: "dark"` behaves exactly as before.
 - [ ] **Memory check:** usage stays within the Phase 5 budget (50 MB).
@@ -1187,8 +1198,12 @@ xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
 ### Slice 5.3: Car Mode
 - Simplified UI: 4 giant buttons (Play/Pause, Next, Prev, Home)
 - Auto-enable when Bluetooth device "CarKit" connects
-- Use the `night` theme (Slice 5.0) after sunset. Themes apply at startup, so either choose
-  the theme at launch, or add live recolouring in this slice.
+- Night theme (Slice 5.0) after sunset. Themes apply at startup (Slice 5.0), so this slice:
+  - selects `night` at launch if the app starts after sunset;
+  - shows a "Switch to night theme? (restarts the app)" prompt at sunset while the app is running.
+    Accepting saves `ui.theme` and restarts; playback state is not kept across the restart.
+  - Switching live, without a restart, is an optional stretch goal that needs a live-recolouring
+    pass; it is not required for this slice.
 
 ### Slice 5.4: Battery/Power Monitoring
 - Read `/sys/class/power_supply/*/capacity` for battery %
