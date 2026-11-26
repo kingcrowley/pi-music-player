@@ -482,6 +482,29 @@ class MusicPlayer:
             })
         return normalized or []
 
+    def list_all_info_own_client(self) -> list:
+        """Run MPD listallinfo on a short-lived dedicated client.
+
+        Used by background library scans so they do not pin the shared
+        MusicPlayer connection (and therefore the serialized lock) while
+        issuing a potentially slow command. Returns the raw listing;
+        callers handle normalization. Empty list on failure.
+        """
+        client = LibMPDClient()
+        client.timeout = self.timeout
+        client.connect(self.host, self.port)
+        try:
+            result = client.listallinfo()
+            return list(result or [])
+        except Exception:
+            return []
+        finally:
+            try:
+                client.close()
+                client.disconnect()
+            except Exception:
+                pass
+
 
 # Import-friendly alias for backward compatibility
 # Note: MPDClient refers to the external library class (imported as LibMPDClient)

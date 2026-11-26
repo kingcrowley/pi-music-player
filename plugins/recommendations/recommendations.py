@@ -121,10 +121,12 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
         if self._stop_event:
             self._stop_event.set()
         if self._bg_thread and self._bg_thread.is_alive():
-            # Worker thread still running; leave the connection open so it
-            # is not closed while a rebuild or library scan is in progress.
             self._bg_thread.join(timeout=5.0)
-            return
+            if self._bg_thread.is_alive():
+                # Worker still running after the join timeout (e.g. a long
+                # rebuild); leave the connection open so the worker never
+                # uses a closed connection.
+                return
         if self._conn:
             self._conn.close()
             self._conn = None
@@ -206,49 +208,63 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             pass
 
     def _scan_library_if_empty(self) -> None:
-        """Scan MPD library into album_songs if table is empty."""
+        """Scan MPD library into album_songs if table is empty.
+
+        The insert runs under _rebuild_lock so a concurrent live pair write
+        (which calls self._conn.commit() on the same connection) cannot close
+        the scan's transaction early and leak partial rows.
+        """
         if not self.core or not hasattr(self.core, "list_all_info"):
             return
         if self._stop_event and self._stop_event.is_set():
             return
-        cur = self._conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM album_songs")
-        if cur.fetchone()[0] > 0:
-            return  # already populated
-        try:
-            library = self.core.list_all_info()
-            if not library:
+        with self._rebuild_lock:
+            if self._stop_event and self._stop_event.is_set():
                 return
-            rows = []
-            for track in library:
-                path = track.get("file") or track.get("path")
-                if not path:
-                    continue
-                artist = track.get("artist", "").strip()
-                album = track.get("album", "").strip()
-                genre = track.get("genre", "").strip()
-                if not artist:
-                    continue
-                rows.append((path, album, artist, genre))
-            if rows:
-                # One transaction: an interrupted scan must not leave a
-                # partial library behind (which would stick the next start-up
-                # on "table is not empty" and skip the rescan). See issue #15.
-                cur.execute("BEGIN IMMEDIATE")
-                try:
-                    cur.executemany(
-                        "INSERT OR REPLACE INTO album_songs (path, album, artist, genre) VALUES (?, ?, ?, ?)",
-                        rows,
-                    )
-                    cur.execute("COMMIT")
-                except Exception:
+            cur = self._conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM album_songs")
+            if cur.fetchone()[0] > 0:
+                return  # already populated
+            try:
+                # Use short-lived client for the scan so it does not pin the
+                # shared MusicPlayer connection (and therefore the serialized
+                # lock) during a potentially slow listallinfo.
+                if hasattr(self.core, "list_all_info_own_client"):
+                    library = self.core.list_all_info_own_client()
+                else:
+                    library = self.core.list_all_info()
+                if not library:
+                    return
+                rows = []
+                for track in library:
+                    path = track.get("file") or track.get("path")
+                    if not path:
+                        continue
+                    artist = track.get("artist", "").strip()
+                    album = track.get("album", "").strip()
+                    genre = track.get("genre", "").strip()
+                    if not artist:
+                        continue
+                    rows.append((path, album, artist, genre))
+                if rows:
+                    # One transaction: an interrupted scan must not leave a
+                    # partial library behind (which would stick the next start-up
+                    # on "table is not empty" and skip the rescan). See issue #15.
+                    cur.execute("BEGIN IMMEDIATE")
                     try:
-                        cur.execute("ROLLBACK")
+                        cur.executemany(
+                            "INSERT OR REPLACE INTO album_songs (path, album, artist, genre) VALUES (?, ?, ?, ?)",
+                            rows,
+                        )
+                        cur.execute("COMMIT")
                     except Exception:
-                        pass
-                    raise
-        except Exception:
-            pass  # best effort
+                        try:
+                            cur.execute("ROLLBACK")
+                        except Exception:
+                            pass
+                        raise
+            except Exception:
+                pass  # best effort
 
     def _should_rebuild(self) -> bool:
         """Check if matrix needs rebuilding.
