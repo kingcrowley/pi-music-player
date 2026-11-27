@@ -869,7 +869,7 @@ testable in isolation.
 
 **Why now:**
 - The Discover screen in Slice 3.2 needs scrollable lists of tracks, artists and albums.
-- The only drag scrolling in the app today belongs to the Stats screen. The handlers are at `ui/dashboard.py:527–547`, with per-label bindings up to `:679`, and the wheel handler starts at `:504–507`.
+- The only drag scrolling in the app today belongs to the Stats screen. The handlers are at `ui/dashboard.py:527–547`, with per-label bindings up to `:679`, and the wheel handler **is at** `:504–507`.
 - Slice 2.2 promised a swipe to open Stats, but it was never built.
 
 **Already in place (keep):**
@@ -1125,7 +1125,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
   - `night` is a dim, red-shifted palette for dark rooms and cars.
   - `large_text` uses the dark colours, fonts about 1.4× larger, and a touch target of 64.
 - [ ] `ui/styles.py` — replace the int `TOUCH_TARGET_SIZE` with a `TOUCH` dict (`{"target": 48, …}`), and update its six uses in `ui/widget.py`.
-- [ ] `ui/styles.py` — a `SIZES` dict for the fixed sizes at `ui/dashboard.py:164`, `:178` and `:203`. `apply_theme()` works them out **once at startup** from the theme and `font_scale`. Widgets read them only when they are built, so they keep those values until the next start.
+- [ ] `ui/styles.py` — a `SIZES` dict for the fixed sizes at `ui/dashboard.py:166`, `:205` and `:226–227`. `apply_theme()` works them out **once at startup** from the theme and `font_scale`. Widgets read them only when they are built, so they keep those values until the next start.
 - [ ] `ui/widget.py` — no colour or size defaults evaluated at import.
   - Change the `TouchButton` (and any similar) parameters to `bg=None, fg=None, active_bg=None, active_fg=None`, and look them up in the body: `bg = COLORS["card_bg"] if bg is None else bg`.
 - [ ] `ui/styles.py` — `apply_theme(name, overrides=None, font_scale=1.0)`.

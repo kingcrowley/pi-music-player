@@ -1041,5 +1041,42 @@ class Slice31TestCase(unittest.TestCase):
                         "Slow library fetch must not block the rebuild lock")
         plugin._conn.close()
 
+    def test_shutdown_flushes_pending_pairs_during_rebuild(self):
+        """shutdown() flushes pairs queued while a rebuild is computing (Issue 17, follow-up 2).
+
+        While _building is True, _record_pair queues the pair; shutdown() must
+        still write it before closing the connection so no pair is dropped.
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+        import threading
+        plugin._stop_event = threading.Event()
+        plugin._bg_thread = threading.Thread(target=plugin._background_worker, daemon=True)
+        plugin._bg_thread.start()
+
+        # Queue a pair while a rebuild is considered in progress.
+        plugin._building = True
+        plugin._record_pair("ArtistA", "ArtistB")
+
+        # shutdown must flush the queued pair before closing the connection.
+        plugin.shutdown()
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT artist_a, artist_b, play_count FROM cooccurrence")
+        pairs = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][:2], ("ArtistA", "ArtistB"))
+        # The connection should be closed after shutdown.
+        self.assertIsNone(plugin._conn)
+
 if __name__ == "__main__":
     unittest.main()

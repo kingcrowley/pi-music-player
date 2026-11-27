@@ -3,7 +3,7 @@
 Local-only music recommendations based on your listening history.
 
 > **Feature:** Phase 3 (Slice 3.1 — Recommendation Engine Core)
-> **Algorithm:** Co-occurrence counting + genre expansion
+> **Algorithm:** Co-occurrence model
 > **Privacy:** All processing local — no network calls, no telemetry
 
 ---
@@ -48,21 +48,21 @@ def get_similar_artists(artist, limit=10):
 
 ---
 
-## Dashboard Features
+## Dashboard Features (Planned — Slice 3.2)
 
-Recommendations surface through the dashboard plugin hooks:
+The recommendation engine surfaces through the dashboard plugin hooks (`on_song_change`, `on_playback_complete`), but the Discover UI that presents these features arrives in **Slice 3.2**:
 
 ### Play Similar
-Queues tracks from artists you've listened to together. Based on artist co-occurrence from listening sessions.
+*(Planned, Slice 3.2)* Queues tracks from artists you've listened to together. Based on artist co-occurrence from listening sessions.
 
 ### Genre Radio
-Shuffles all tracks in a selected genre from the library scan (`album_songs` table).
+*(Planned, Slice 3.2)* Shuffles all tracks in a selected genre from the library scan (`album_songs` table).
 
 ### Revisit
-Shows albums not played in `days` (default 30) — one track path per album.
+*(Planned, Slice 3.2)* Shows albums not played in `days` (default 30) — one track path per album. Excludes recently played albums.
 
 ### New to You
-Shows artists in your library (`album_songs` from MPD `listallinfo`) that you've never played (absent from `plays`).
+*(Planned, Slice 3.2)* Shows artists in your library (`album_songs` from MPD `listallinfo`) that you've never played (absent from `plays`).
 
 Access requires the Touch Toolkit (Slice 3.1a) for `ScrollList` lists, and Slice 3.2 for the Discover screen navigation.
 
@@ -101,14 +101,18 @@ The manifest separates **schema** (`settings_schema`, what values are valid) fro
   "type": "feature",
   "capabilities": ["recommendations"],
   "settings_schema": {
-    "recommendations": {
-      "type": "object",
-      "properties": {
-        "session_gap_seconds": {"type": "integer", "minimum": 60, "maximum": 3600, "default": 300},
-        "scan_library_on_startup": {"type": "boolean", "default": true}
-      },
-      "required": ["session_gap_seconds", "scan_library_on_startup"]
-    }
+    "type": "object",
+    "properties": {
+      "recommendations": {
+        "type": "object",
+        "properties": {
+          "session_gap_seconds": {"type": "integer", "minimum": 60, "maximum": 3600, "default": 300},
+          "scan_library_on_startup": {"type": "boolean", "default": true}
+        },
+        "required": ["session_gap_seconds", "scan_library_on_startup"]
+      }
+    },
+    "required": ["recommendations"]
   },
   "settings": {
     "recommendations": {
@@ -219,12 +223,17 @@ The engine registers for two events raised by `ui/dashboard.py`:
 ```bash
 # After building co-occurrence model
 python3 -c "
-import sys; sys.path.insert(0, '.')
+import sys, tempfile, os, shutil, json
+sys.path.insert(0, '.')
 from plugins import PluginManager
 from core.config import Config
-d = tempfile.mkdtemp()  # copy plugins/recommendations into d
+d = tempfile.mkdtemp()
 shutil.copytree('plugins/recommendations', os.path.join(d, 'recommendations'))
-mgr = PluginManager(plugin_dir=d)
+cfg_path = os.path.join(d, 'app_config.json')
+json.dump({'stats': {'db_path': os.path.join(d, 'test_play_stats.db')}}, open(cfg_path, 'w'))
+class FakePlayer:
+    config = Config(cfg_path)
+mgr = PluginManager(core_engine=FakePlayer(), plugin_dir=d)
 mgr.load_plugins()
 rec = mgr.get_plugin('recommendations')
 print('Similar to Radiohead:', rec.get_similar_artists('Radiohead'))
