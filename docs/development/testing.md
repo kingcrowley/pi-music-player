@@ -14,6 +14,7 @@ How to run the test suite for the Low-Resource Linux Music Player.
 | `tests/test_slice_2_2.py` | Slice 2.2 query methods + Dashboard `_update_ui` state machine |
 | `tests/test_slice_2_3.py` | Plugin system hardening (shutdown_all, unload hooks, reload, enable/disable) |
 | `tests/test_slice_3_1.py` | Recommendation engine: co-occurrence matrix, genre radio, revisit, new-to-you, session rules, live pairing, library scan |
+| `tests/test_slice_3_1a.py` | Gesture toolkit: GestureRecognizer (tap/drag/long-press/swipe), momentum step, ScrollList scrolling/momentum/tap (Tk tests skip without a display) |
 
 ## Running the Suite
 

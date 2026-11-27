@@ -49,6 +49,18 @@ WINDOW = {
     "min_height": 480,
 }
 
+# Gesture thresholds (Slice 3.1a Touch Toolkit)
+GESTURE = {
+    "tap_slop": 10,             # px: movement <= this counts as "not moved"
+    "long_press_ms": 500,       # ms
+    "swipe_min_px": 80,         # px
+    "swipe_max_ms": 400,        # ms
+    "swipe_fraction": 0.10,    # fraction of window width for swipe threshold
+    "friction": 0.90,           # momentum carry factor
+    "frame_ms": 33,             # momentum frame interval (ms)
+}
+
+
 __all__ = [
     "TOUCH_TARGET_SIZE",
     "TOUCH_TARGET_PADDING",
@@ -57,4 +69,5 @@ __all__ = [
     "FONTS",
     "SPACING",
     "WINDOW",
+    "GESTURE",
 ]
