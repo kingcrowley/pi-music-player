@@ -994,5 +994,89 @@ class Slice31TestCase(unittest.TestCase):
                          "List-valued tags should not empty album_songs")
         plugin._conn.close()
 
+    def test_scan_lock_scope_fetch_outside_lock(self):
+        """The library scan fetches MPD outside _rebuild_lock (Issue 17, follow-up 1).
+
+        A slow fetch must not block other threads that need the lock. Starts
+        the scan on a thread with a ~0.5 s fake fetch, then times
+        _update_last_built_at() (which acquires _rebuild_lock) from the main
+        thread. It must return well before the fetch finishes (under 0.2 s).
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+
+        class SlowCore:
+            def list_all_info(self):
+                return []
+
+            def list_all_info_own_client(self):
+                time.sleep(0.5)
+                return [
+                    {"path": "/music/a.flac", "artist": "A", "album": "Al",
+                     "title": "T", "genre": "Rock", "time": "200"},
+                ]
+
+        plugin.core = SlowCore()
+
+        import threading
+        t = threading.Thread(target=plugin._scan_library_if_empty)
+        t.start()
+        # Give the scan time to reach its (unlocked) fetch before timing.
+        time.sleep(0.1)
+
+        start = time.monotonic()
+        plugin._update_last_built_at(int(time.time()))
+        elapsed = time.monotonic() - start
+
+        t.join(timeout=5.0)
+
+        self.assertLess(elapsed, 0.2,
+                        "Slow library fetch must not block the rebuild lock")
+        plugin._conn.close()
+
+    def test_shutdown_flushes_pending_pairs_during_rebuild(self):
+        """shutdown() flushes pairs queued while a rebuild is computing (Issue 17, follow-up 2).
+
+        While _building is True, _record_pair queues the pair; shutdown() must
+        still write it before closing the connection so no pair is dropped.
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+        import threading
+        plugin._stop_event = threading.Event()
+        plugin._bg_thread = threading.Thread(target=plugin._background_worker, daemon=True)
+        plugin._bg_thread.start()
+
+        # Queue a pair while a rebuild is considered in progress.
+        plugin._building = True
+        plugin._record_pair("ArtistA", "ArtistB")
+
+        # shutdown must flush the queued pair before closing the connection.
+        plugin.shutdown()
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT artist_a, artist_b, play_count FROM cooccurrence")
+        pairs = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][:2], ("ArtistA", "ArtistB"))
+        # The connection should be closed after shutdown.
+        self.assertIsNone(plugin._conn)
+
 if __name__ == "__main__":
     unittest.main()

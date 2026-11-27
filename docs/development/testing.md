@@ -13,6 +13,7 @@ How to run the test suite for the Low-Resource Linux Music Player.
 | `tests/test_slice_2_1.py` | PlayStats SQLite: record/queries/retention/CSV export, config defaults |
 | `tests/test_slice_2_2.py` | Slice 2.2 query methods + Dashboard `_update_ui` state machine |
 | `tests/test_slice_2_3.py` | Plugin system hardening (shutdown_all, unload hooks, reload, enable/disable) |
+| `tests/test_slice_3_1.py` | Recommendation engine: co-occurrence matrix, genre radio, revisit, new-to-you, session rules, live pairing, library scan |
 
 ## Running the Suite
 

@@ -139,6 +139,17 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                 # rebuild); leave the connection open so the worker never
                 # uses a closed connection.
                 return
+        # Flush pairs queued during a rebuild before closing the connection so
+        # shutdown does not drop them (Issue 17, follow-up 2). Pending pairs
+        # are already canonical and same-artist-filtered by _record_pair.
+        with self._rebuild_lock:
+            pairs = list(self._pending_pairs)
+            self._pending_pairs = []
+            if pairs and self._conn is not None:
+                cur = self._conn.cursor()
+                for a, b in pairs:
+                    self._write_pair(cur, a, b)
+                self._conn.commit()
         if self._conn:
             self._conn.close()
             self._conn = None
@@ -403,11 +414,7 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                     raise
                 # Flush pairs recorded while we were computing the matrix.
                 for a, b in self._pending_pairs:
-                    cur.execute(
-                        "INSERT INTO cooccurrence (artist_a, artist_b, play_count) VALUES (?, ?, 1) "
-                        "ON CONFLICT(artist_a, artist_b) DO UPDATE SET play_count = play_count + 1",
-                        (a, b)
-                    )
+                    self._write_pair(cur, a, b)
                 self._pending_pairs = []
         finally:
             with self._rebuild_lock:
@@ -527,6 +534,15 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
             self._last_finished = None
             self._current = None
 
+    @staticmethod
+    def _write_pair(cur: Any, a: str, b: str) -> None:
+        """Insert/increment a co-occurrence pair (caller holds _rebuild_lock)."""
+        cur.execute(
+            "INSERT INTO cooccurrence (artist_a, artist_b, play_count) VALUES (?, ?, 1) "
+            "ON CONFLICT(artist_a, artist_b) DO UPDATE SET play_count = play_count + 1",
+            (a, b),
+        )
+
     def _update_last_built_at(self, ended_at: int) -> None:
         """Update cooccurrence_meta.last_built_at to prevent false staleness.
 
@@ -559,11 +575,7 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                 return
             if self._conn:
                 cur = self._conn.cursor()
-                cur.execute(
-                    "INSERT INTO cooccurrence (artist_a, artist_b, play_count) VALUES (?, ?, 1) "
-                    "ON CONFLICT(artist_a, artist_b) DO UPDATE SET play_count = play_count + 1",
-                    (a, b)
-                )
+                self._write_pair(cur, a, b)
                 self._conn.commit()
 
     # ------------------------------------------------------------------

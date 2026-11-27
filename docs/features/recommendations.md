@@ -2,8 +2,8 @@
 
 Local-only music recommendations based on your listening history.
 
-> **Feature:** Phase 3
-> **Algorithm:** Co-occurrence counting + genre expansion
+> **Feature:** Phase 3 (Slice 3.1 — Recommendation Engine Core)
+> **Algorithm:** Co-occurrence model
 > **Privacy:** All processing local — no network calls, no telemetry
 
 ---
@@ -14,7 +14,7 @@ The recommendation engine builds a local co-occurrence model from your play hist
 
 ### Session Definition
 
-A "listening session" is a series of consecutive tracks played within 5 minutes of each other:
+A "listening session" is a series of consecutive tracks played within `session_gap_seconds` (default 300s / 5 minutes) of each other:
 
 ```
 Session: Track A → Track B (1:30 gap) → Track C (0:45 gap) → ... (3:20 gap to next session)
@@ -38,75 +38,98 @@ def get_similar_artists(artist, limit=10):
     return sorted(similar, key=lambda x: x['score'], reverse=True)[:limit]
 ```
 
-### Genre Expansion
+### Session Rules
 
-Tracks are also linked by genre tags (from mutagen file metadata or MusicBrainz tags):
-
-```
-Genre: "Progressive Rock" → [Pink Floyd, King Crimson, Tool, Radiohead, ...]
-```
-
-Recommendations can expand beyond co-occurrence to include genre-similar artists.
+- A session is a run of completed plays where the gap between one track's `ended_at` and the next track's `started_at` is `< session_gap_seconds`.
+- Any play that is not completed (skip or stop) ends the session — no pair across that boundary.
+- Pairs are recorded once, in canonical order (`artist_a < artist_b`).
+- Same-artist pairs and blank artists are never recorded.
+- Pairing happens on track **completion** (not song change), so a track is never paired with itself.
 
 ---
 
-## Features in the Dashboard
+## Dashboard Features (Planned — Slice 3.2)
 
-Access from the UI by swiping left twice (Now Playing → Stats → Discover):
+The recommendation engine surfaces through the dashboard plugin hooks (`on_song_change`, `on_playback_complete`), but the Discover UI that presents these features arrives in **Slice 3.2**:
 
 ### Play Similar
-
-Button on the "Now Playing" screen:
-
-- **Action:** Queues 10 tracks from artists you've listened to together
-- **When to use:** When you want to discover more music like what you're hearing
-- **Basis:** Artist co-occurrence from listening sessions
+*(Planned, Slice 3.2)* Queues tracks from artists you've listened to together. Based on artist co-occurrence from listening sessions.
 
 ### Genre Radio
-
-From Discover screen:
-
-- **Action:** Shuffles all tracks in a selected genre
-- **When to use:** "I want to hear all my blues music in random order"
-- **Genres available:** All genres present in your library
+*(Planned, Slice 3.2)* Shuffles all tracks in a selected genre from the library scan (`album_songs` table).
 
 ### Revisit
-
-- **Action:** Shows albums not played in 30+ days
-- **When to use:** "What did I forget about?"
-- **Smart:** Excludes recently played, shows hidden gems from your collection
+*(Planned, Slice 3.2)* Shows albums not played in `days` (default 30) — one track path per album. Excludes recently played albums.
 
 ### New to You
+*(Planned, Slice 3.2)* Shows artists in your library (`album_songs` from MPD `listallinfo`) that you've never played (absent from `plays`).
 
-- **Action:** Shows artists in your library that you've never played
-- **When to use:** "What else does my collection have?"
-- **Requires:** MPD database up-to-date (`mpc update --wait` after adding new music)
+Access requires the Touch Toolkit (Slice 3.1a) for `ScrollList` lists, and Slice 3.2 for the Discover screen navigation.
 
 ---
 
 ## Configuration
 
-Enable/disable recommendation features in `config.json`:
+### App-level config (`config.json`)
+
+The recommendation engine reads the app-level database path from `stats.db_path`. The `MusicPlayer` instance has `player.config` attached by `main.py` so the plugin can resolve `stats.db_path` at initialize time.
 
 ```json
 {
-  "recommendations": {
+  "stats": {
+    "db_path": "~/.local/share/pi-music-player/play_stats.db",
     "enabled": true,
-    "use_genre_expansion": true,
-    "session_gap_seconds": 300,
-    "min_session_plays": 3,
-    "max_suggestions": 20
+    "max_size_mb": 10,
+    "retention_days": 365
   }
 }
 ```
 
 | Setting | Description |
 |---------|-------------|
-| `enabled` | Turn on/off recommendation engine |
-| `use_genre_expansion` | Include genre-similar tracks in suggestions |
-| `session_gap_seconds` | Gap threshold for session boundaries (default: 300) |
-| `min_session_plays` | Minimum plays to count toward co-occurrence |
-| `max_suggestions` | Maximum results per recommendation query |
+| `stats.db_path` | Path to the SQLite play statistics database (shared by PlayStats and the recommendation engine) |
+| `stats.enabled` | Whether statistics collection is enabled |
+
+### Plugin manifest (`plugins/recommendations/config.json`)
+
+The manifest separates **schema** (`settings_schema`, what values are valid) from **values** (`settings`, the actual current values). The engine reads `settings.recommendations.*` at initialize time.
+
+```json
+{
+  "plugin_id": "recommendations",
+  "name": "Recommendations",
+  "type": "feature",
+  "capabilities": ["recommendations"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "recommendations": {
+        "type": "object",
+        "properties": {
+          "session_gap_seconds": {"type": "integer", "minimum": 60, "maximum": 3600, "default": 300},
+          "scan_library_on_startup": {"type": "boolean", "default": true}
+        },
+        "required": ["session_gap_seconds", "scan_library_on_startup"]
+      }
+    },
+    "required": ["recommendations"]
+  },
+  "settings": {
+    "recommendations": {
+      "session_gap_seconds": 300,
+      "scan_library_on_startup": true
+    }
+  },
+  "auto_load": true
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `recommendations.session_gap_seconds` | Max gap (seconds) between tracks in the same listening session (default 300) |
+| `recommendations.scan_library_on_startup` | Whether to scan the MPD library at startup to populate `album_songs` (default true) |
+
+Note: the manifest does **not** contain `stats.db_path` — that comes from the app-level config via `main.py` attaching `player.config = config`.
 
 ---
 
@@ -115,60 +138,68 @@ Enable/disable recommendation features in `config.json`:
 Recommendations are stored in SQLite alongside play statistics:
 
 ```sql
-CREATE TABLE cooccurrence (
-    artist_a TEXT,
-    artist_b TEXT,
+CREATE TABLE IF NOT EXISTS cooccurrence (
+    artist_a TEXT NOT NULL,
+    artist_b TEXT NOT NULL,
     play_count INTEGER DEFAULT 1,
     PRIMARY KEY (artist_a, artist_b)
-);
+);  -- artist_a < artist_b (canonical order); same-artist pairs never stored
 
-CREATE TABLE genres (
-    genre TEXT PRIMARY KEY,
-    artists TEXT  -- comma-separated list
-);
-
-CREATE TABLE album_songs (
+CREATE TABLE IF NOT EXISTS album_songs (
+    path TEXT PRIMARY KEY,
     album TEXT,
     artist TEXT,
-    path TEXT,
-    genre TEXT,
-    PRIMARY KEY (path)
+    genre TEXT
+);  -- populated by MPD listallinfo library scan
+
+CREATE TABLE IF NOT EXISTS cooccurrence_meta (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_built_at INTEGER NOT NULL  -- INTEGER Unix seconds (same type as plays.ended_at)
 );
 ```
 
-### Schema Update
-
-The co-occurrence matrix is updated:
-
-1. **Per-track:** On each play completion, record with previous/next track in session
-2. **Nightly:** At ~3 AM local time, run vacuum and optimize indices
+`cooccurrence_meta.last_built_at` records when the matrix was last rebuilt so the startup staleness check can compare it with `MAX(plays.ended_at)`. The comparison is number-to-number (both INTEGER Unix seconds), so a TEXT timestamp would never appear newer.
 
 ---
 
 ## Building the Model
 
-### Initial Build
+### Initial Build (Startup)
 
-On first run after Phase 3 is enabled:
-
-```python
-# Build co-occurrence from existing history
-builder = RecommendationBuilder(stats_db_path)
-builder.build_from_history()
-```
-
-Time estimate: ~1 minute per 1,000 tracked plays on Pi Zero 2 W.
+On first run, `initialize()` compares `cooccurrence_meta.last_built_at` with `MAX(plays.ended_at)` in the background thread. If the matrix is missing or older than the latest play, it runs `build_from_history()` — which writes into a temp `cooccurrence_new` table and atomically swaps into place — so lookups never see a half-built matrix.
 
 ### Ongoing Updates
 
-During playback:
+During playback, `_on_playback_complete` records co-occurrence pairs for completed tracks within `session_gap_seconds`. If a rebuild is computing the matrix at the same time, pairs are queued (`_pending_pairs`) and flushed after the atomic swap so they are never lost.
 
-```python
-# After track completion
-if stats.is_completed():
-    cooc = CooccurrenceModel()
-    cooc.record_session_pair(prev_track, curr_track)
-```
+---
+
+## API Reference
+
+### RecommendationEngine class
+
+Located in `plugins/recommendations/recommendations.py`. The class is named `MusicPlayerPlugin` (so the plugin loader discovers it) but is imported in tests as `RecommendationEngine`.
+
+| Method | Description |
+|--------|-------------|
+| `get_similar_artists(artist, limit=10)` | Returns co-occurring artists ranked by `play_count` DESC. Bidirectional: queries both `artist_a` and `artist_b`. Same-artist pairs excluded. |
+| `get_recommendations_for_current(limit=10)` | Recommendations based on the currently playing track's artist (via `_current_artist`). |
+| `get_genre_radio(genre)` | Shuffled track paths from `album_songs` matching genre. Delimited whole-tag match (case-insensitive). Returns `[]` when table is empty. |
+| `get_revisit_candidates(days=30)` | One track path per album not played in the last `days`. Excludes recently played albums. |
+| `get_new_to_you()` | Library artists (`album_songs`) absent from `plays`. Requires library scan first. |
+| `initialize(core)` | Resolves `stats.db_path` from app config, opens connection, registers hooks, starts background thread for library scan + rebuild. |
+| `shutdown()` | Signals background thread to stop, waits for it, flushes queued pairs, closes connection. |
+
+### Hooks
+
+The engine registers for two events raised by `ui/dashboard.py`:
+
+| Hook | Payload | When fired |
+|------|---------|------------|
+| `on_song_change` | `{artist, album, title, path, started_at}` | When `_update_ui` opens a play row (stop→replay and genuine song changes) |
+| `on_playback_complete` | `{artist, album, title, path, started_at}`, `completed`, `skipped` | When a track ends/stops/skips |
+
+`main.py` sets `player.config = config` before loading plugins, and passes `plugin_mgr` to `run_dashboard()`.
 
 ---
 
@@ -187,81 +218,27 @@ if stats.is_completed():
 
 ---
 
-## Example Output
-
-```python
-# What to expect after some listening
->>> get_similar_artists('Radiohead')
-[{'artist': 'Pink Floyd', 'score': 89},
- {'artist': 'Tool', 'score': 76},
- {'artist': 'King Crimson', 'score': 64},
- {'artist': 'Muse', 'score': 51},
- {'artist': 'Muse', 'score': 51}]
-
->>> get_genre_radio('Progressive Rock')
-# Returns shuffled queue of all blues tracks in library
-```
-
----
-
-## API Reference
-
-### RecommendationEngine Class
-
-Located in `plugins/features/recommendations.py`:
-
-```python
-from plugins.features.recommendations import RecommendationEngine
-
-engine = RecommendationEngine(
-    stats_db_path='play_stats.db',
-    music_db_path='/var/lib/mpd/mpd.db'
-)
-
-# Get similar artists
-similar = engine.get_similar_artists('Radiohead', limit=10)
-
-# Get recommendations for current track
-recommendations = engine.get_recommendations_for_current({
-    'artist': 'Radiohead',
-    'album': 'OK Computer',
-    'title': 'Paranoid Android'
-})
-
-# Get genre-based radio queue
-queue = engine.get_genre_radio('Progressive Rock')
-
-# Get "Revisit" candidates
-revisit_albums = engine.get_revisit_candidates(days=30)
-
-# Get "New to You" artists
-new_artists = engine.get_new_to_you()
-```
-
-### MPD Integration
-
-Recommendations queue tracks via MPD:
-
-```python
-# Play similar tracks
-for track in similar_tracks:
-    mpd_client.add(track['path'])
-
-# Or play immediate queue
-mpd_client.playid(0)  # Start from beginning
-```
-
----
-
 ## Manual Testing
 
 ```bash
 # After building co-occurrence model
 python3 -c "
-from plugins.recommendations import RecommendationEngine
-engine = RecommendationEngine('play_stats.db')
-print('Similar to Radiohead:', engine.get_similar_artists('Radiohead'))
-print('Genre Radio:', engine.get_genre_radio('Blues')[:5])
+import sys, tempfile, os, shutil, json
+sys.path.insert(0, '.')
+from plugins import PluginManager
+from core.config import Config
+d = tempfile.mkdtemp()
+shutil.copytree('plugins/recommendations', os.path.join(d, 'recommendations'))
+cfg_path = os.path.join(d, 'app_config.json')
+json.dump({'stats': {'db_path': os.path.join(d, 'test_play_stats.db')}}, open(cfg_path, 'w'))
+class FakePlayer:
+    config = Config(cfg_path)
+mgr = PluginManager(core_engine=FakePlayer(), plugin_dir=d)
+mgr.load_plugins()
+rec = mgr.get_plugin('recommendations')
+print('Similar to Radiohead:', rec.get_similar_artists('Radiohead'))
+print('Genre Radio Blues:', rec.get_genre_radio('Blues')[:5])
+mgr.shutdown_all()
 "
 ```
 
@@ -269,12 +246,13 @@ print('Genre Radio:', engine.get_genre_radio('Blues')[:5])
 
 ## Performance
 
-| Operation | Target Time | Pi Zero 2 W |
-|-----------|-------------|-------------|
-| Build model from 1,000 plays | < 60 seconds | ~45 seconds |
-| Get similar artists | < 100 ms | ~60 ms |
-| Get genre radio | < 200 ms | ~150 ms |
-| Memory usage | N/A | ~5 MB |
+| Operation | Target Time |
+|-----------|-------------|
+| Get similar artists | < 200 ms on Pi Zero 2 W |
+| Get genre radio | < 200 ms on Pi Zero 2 W |
+| Get similar artists (desktop) | < 500 ms |
+
+Memory stays within the Phase 3 budget (40 MB). The background library scan and rebuild run on a daemon thread so the dashboard opens immediately; queries degrade gracefully (empty lists) until data is ready.
 
 ---
 
@@ -282,7 +260,8 @@ print('Genre Radio:', engine.get_genre_radio('Blues')[:5])
 
 | Issue | Solution |
 |-------|----------|
-| No recommendations | Build model: check play history exists, run `build_from_history()` |
+| No recommendations | Build model: check play history exists; run `build_from_history()` after startup staleness check |
 | All artists "similar" | Low play count; need more listening sessions |
-| Genre radio empty | MPD database outdated; run `mpc update --wait` |
-| Slow queries | Check SQLite indices, consider vacuum |
+| Genre radio empty | Library scan hasn't run yet or `album_songs` is empty; check `scan_library_on_startup` |
+| New to You empty | All library artists have been played at least once |
+| Plugin fails to load on fresh install | Plugin creates the DB parent directory on initialize (Issue 15 fix #1) |
