@@ -487,7 +487,7 @@ class ScrollList(tk.Frame):
             self._canvas.configure(scrollregion=bb)
 
     # --- Gesture handling (via bind_gestures / recognizer) ---
-    def _on_gesture(self, name, *args):
+    def _on_gesture(self, name, *args, source=None):
         if name == "drag_move":
             dx, dy = args
             # dy > 0 → finger down → content should scroll up → yview_scroll(-dy)
@@ -495,36 +495,35 @@ class ScrollList(tk.Frame):
             self._canvas.yview_scroll(-dy, "units")
         elif name == "drag_end":
             vx, vy = args
-            # vy px/s → scroll units per frame = vy * (frame_ms/1000)
-            # (we scroll vertically; positive vy = finger moved down = scroll up)
+            # vy px/s → ScrollList converts to px/frame in _start_momentum.
+            # vy > 0 (finger moving down) → content scrolls up → negative units.
             self._start_momentum(-vy)
         elif name == "tap":
-            self._handle_tap()
+            self._handle_tap(source)
         elif name == "swipe":
             direction, velocity = args
             if self._swipe_cb:
                 self._swipe_cb(direction, velocity)
 
-    def _handle_tap(self):
-        if not self._select_cb:
+    def _handle_tap(self, source):
+        if not self._select_cb or source is None:
             return
-        # The recognizer fires tap events, but we need to know which row
-        # was tapped. The recognizer doesn't carry the widget, so we use
-        # the most recent press position to infer the row. A more robust
-        # approach would be to have the recognizer return the pressed widget
-        # alongside the tap event. For now, we use the canvas's focus/press
-        # tracking.
-        # Since we bind gestures on each row, the tap event's "pressed"
-        # widget in the bind_gestures state will be the row.
-        # However, the recognizer itself doesn't know about widgets.
-        # We'll use the most recent row under the pointer as a heuristic.
-        # (Ideally, bind_gestures would pass the widget in the event.)
-        # For the Slice 3.1a acceptance criteria, we rely on the fact that
-        # the row has its own gesture binding, and its tap handler would
-        # fire on_select. But our current design centralizes gesture handling.
-        # As a pragmatic fix, we walk up from the focused/pressed widget.
-        # This is a known limitation; Slice 3.2 can improve.
-        pass
+        row = self._row_for_widget(source)
+        if row is not None and row in self._row_items:
+            self._select_cb(self._row_items[row])
+
+    def _row_for_widget(self, w):
+        """Walk up from a widget to the ScrollList row widget that contains it."""
+        seen = 0
+        while w is not None and seen < 16:
+            if w in self._row_items:
+                return w
+            try:
+                w = w.master
+            except Exception:
+                break
+            seen += 1
+        return None
 
     # --- Mouse wheel ---
     def _on_mousewheel(self, event):

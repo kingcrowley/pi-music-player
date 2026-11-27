@@ -265,7 +265,9 @@ def bind_gestures(
             if name in ("drag_move", "long_press"):
                 if state["pressed"] is not None:
                     _clear_pressed_state(state["pressed"])
-            on_event(*evt)
+            # Pass the widget that received the press as ``source`` so callers
+            # (e.g. ScrollList) can resolve which row was tapped/swiped.
+            on_event(evt[0], *evt[1:], source=state["pressed"])
 
     def _cancel_timer() -> None:
         if state["timer"] is not None and state["pressed"] is not None:
