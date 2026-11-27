@@ -869,7 +869,7 @@ testable in isolation.
 
 **Why now:**
 - The Discover screen in Slice 3.2 needs scrollable lists of tracks, artists and albums.
-- The only drag scrolling in the app today belongs to the Stats screen. The handlers are at `ui/dashboard.py:468–503`, with per-label bindings up to `:635`, and the wheel handler starts at `:460`.
+- The only drag scrolling in the app today belongs to the Stats screen. The handlers are at `ui/dashboard.py:527–547`, with per-label bindings up to `:679`, and the wheel handler starts at `:504–507`.
 - Slice 2.2 promised a swipe to open Stats, but it was never built.
 
 **Already in place (keep):**
@@ -922,7 +922,7 @@ testable in isolation.
     - Frames run every `FRAME_MS` (33 ms) via `after()`. Scrolling stops below 0.5 px per frame, or when it reaches either end of the list.
     - A new press cancels momentum immediately.
     - The speed step is a pure function in `ui/gestures.py`, so it can be tested without a display.
-  - **Mouse wheel:** keep `<MouseWheel>` for Windows and macOS, and add `<Button-4>` / `<Button-5>` for X11 (the Pi). Today only `<MouseWheel>` is bound (`ui/dashboard.py:470–471`), and it never fires on X11.
+  - **Mouse wheel:** keep `<MouseWheel>` for Windows and macOS, and add `<Button-4>` / `<Button-5>` for X11 (the Pi). Today only `<MouseWheel>` is bound (`ui/dashboard.py:514–515`), and it never fires on X11.
   - **Large lists:** fine up to about 200 rows. For bigger libraries, Slice 3.2 shows the first 200 plus a "More" row, rather than building thousands of widgets on a Pi Zero.
 - [ ] `ui/dashboard.py` — move the Stats screen onto `ScrollList`.
   - Delete `_on_stats_drag_start` and `_on_stats_drag_move`, the per-label drag bindings and the old wheel handler.
@@ -1113,7 +1113,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 - `core/config.py:32` already has `ui.theme: "dark"`, but nothing reads it. `Config` deep-merges user values over defaults and does **no** validation.
 - **Colour defaults are fixed when the module is imported.** `TouchButton.__init__` takes `bg: str = COLORS["card_bg"]` and similar defaults (`ui/widget.py:82–85`), and Python evaluates them once, at import. Changing `COLORS` afterwards never reaches those defaults.
 - **The touch size can't change in place either.** `TOUCH_TARGET_SIZE` is an int, and each importing module holds its own copy (`ui/widget.py:22, 23, 98, 99, 349, 350`).
-- **Fixed sizes block bigger text.** `ui/dashboard.py:164`, `:178` and `:203` hard-code sizes (album art and others), so `large_text` would clip at 800×480 unless those scale too.
+- **Fixed sizes block bigger text.** `ui/dashboard.py:166`, `:205` and `:226–227` hard-code sizes (album art and others), so `large_text` would clip at 800×480 unless those scale too.
 - **The dashboard can't be rebuilt in place.** `Dashboard` *is* the Tk root (`class Dashboard(tk.Tk)`, `ui/dashboard.py:77`), and its widgets are gridded straight onto it, with no inner frame that could be destroyed and rebuilt.
 
 **Target Date:** TBD (Phase 5)

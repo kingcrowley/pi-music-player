@@ -139,6 +139,22 @@ class MusicPlayerPlugin(MusicPlayerPlugin):
                 # rebuild); leave the connection open so the worker never
                 # uses a closed connection.
                 return
+        # Flush pairs queued during a rebuild before closing the connection so
+        # shutdown does not drop them (Issue 17, follow-up 2).
+        with self._rebuild_lock:
+            pairs = list(self._pending_pairs)
+            self._pending_pairs = []
+            if pairs and self._conn is not None:
+                cur = self._conn.cursor()
+                for a, b in pairs:
+                    if a == b:
+                        continue
+                    cur.execute(
+                        "INSERT INTO cooccurrence (artist_a, artist_b, play_count) VALUES (?, ?, 1) "
+                        "ON CONFLICT(artist_a, artist_b) DO UPDATE SET play_count = play_count + 1",
+                        (a, b),
+                    )
+                self._conn.commit()
         if self._conn:
             self._conn.close()
             self._conn = None
