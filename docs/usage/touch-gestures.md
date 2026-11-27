@@ -2,281 +2,115 @@
 
 Touch interaction guide for the music player UI on Raspberry Pi Zero 2 W with touchscreen.
 
-> **Target:** Resistive / capacitive touchscreen, X11/Wayland
+> **Target:** Resistive / capacitive touchscreen, X11/Wayland+XWayland
 > **Default mode:** Touchscreen-optimized (large touch targets)
 
 ---
 
-## Touch Interaction Overview
+## Overview
 
-The music player supports multi-touch gestures optimized for finger interaction:
+Tkinter receives touch as single-pointer mouse events, so all gestures below are
+single-pointer gestures. There is no multi-touch, no pinch-to-zoom, and no
+edge-swipe.
+
+Each gesture the recognizer tracks produces events that the UI maps to actions:
 
 | Gesture | Action |
 |---------|--------|
-| Tap | Click a button, select an option |
-| Long press | Open context menu, show additional options |
-| Swipe | Navigate between screens |
-| Drag | Adjust volume, seek in progress bar |
-| Pinch | Zoom in UI (for detail views) |
+| Tap | Click a button, select a row / screen |
+| Long press | Clear pressed state (no context menu yet — planned) |
+| Drag | Scroll a scrollable list |
+| Swipe left/right | Navigate between screens |
+| Drag along progress bar | Seek (the progress bar is excluded from swipe navigation) |
 
 ---
 
-## Primary Touch Controls
+## Gesture Recognition (Slice 3.1a Touch Toolkit)
 
-### Album Art (Tap)
-- **Behavior:** Single tap shows the current album art, double tap opens art gallery (all album art from history)
-- **Long press:** Quick actions (Share, Favorite, Set as wallpaper)
+Gestures are recognized by `ui.gestures.GestureRecognizer`, a pure-Python state
+machine (no Tk imports) that can be unit-tested without a display.
 
-### Play/Pause (Tap)
-- **Behavior:** Toggles between play and pause states
-- **Visual feedback:** Button changes icon and color
-- **Long press:** Show current queue
+### Input
 
-### Volume (Drag)
-- **Behavior:** Drag horizontally to adjust volume (0-100%)
-- **Visual feedback:** Volume bars show current level
-- **Release:** Saves volume setting to MPD
+The recognizer is fed `press(x, y, t)`, `move(x, y, t)` and `release(x, y, t)`
+with `t` in seconds from a monotonic clock. A `timeout(t)` callback reports a
+long-press timer firing. The recognizer never schedules anything itself.
 
-### Progress Bar (Tap)
-- **Behavior:** Taps anywhere on progress bar seeks to that position
-- **Drag:** Fine control seeking with continuous updates
+### Output contract
 
-### Next/Previous Buttons (Tap)
-- **Behavior:** Navigate to next or previous track
-- **Long press:** Skip to next album (if available)
+Per press: zero or more `drag_move(dx, dy)` events, then exactly one final
+event:
 
----
+| Final event | Meaning |
+|-------------|---------|
+| `tap` | Press stayed under the slop distance and released quickly |
+| `long_press` | Hold >= 500 ms without moving past slop |
+| `drag_end(vx, vy)` | Drag released without meeting the swipe test |
+| `swipe(direction, velocity)` | Fast horizontal drag |
 
-## Navigation Gestures
+### Thresholds (`ui.styles.GESTURE`)
 
-### Screen Navigation (Swipe)
+| Name | Value | Meaning |
+|------|-------|---------|
+| `tap_slop` | 10 px | Movement ≤ this counts as "not moved" |
+| `long_press_ms` | 500 ms | Hold time for long press |
+| `swipe_min_px` | 80 px | Minimum horizontal movement for swipe |
+| `swipe_max_ms` | 400 ms | Maximum duration for a swipe |
+| `swipe_fraction` | 0.10 | Fraction of window width for swipe threshold |
+| `friction` | 0.90 | Momentum decay per frame |
+| `frame_ms` | 33 ms | Momentum frame interval |
 
-#### Left to Right
-- **Target:** Anywhere on screen
-- **Action:** Switch to Previous screen (Settings → Discover → Stats → Now Playing)
-
-#### Right to Left
-- **Target:** Anywhere on screen
-- **Action:** Switch to Next screen (Now Playing → Stats → Discover → Settings)
-
-#### Up/Down
-- **Target:** Scroll inside lists/modals
-- **Action:** Scroll through options, dialogs, queue
-
-### Swipe Intensity
-- **Light swipe:** Quick navigation between screens
-- **Strong swipe:** Immediate screen transition
-- **Very strong swipe:** Triggers a long-press equivalent
+The actual swipe threshold is `max(swipe_min_px, swipe_fraction × width)`.
 
 ---
 
-## Specialized Gestures
+## Swipe Navigation (Slice 3.1a Touch Toolkit)
 
-### Volume Control
-- **Horizontal drag from left to right:** Increase volume
-- **Horizontal drag from right to left:** Decrease volume
-- **From outside app:** Swipe from screen edge for system volume
+Swipes navigate between screens:
 
-### Progress Seek
-- **Tap:** Instant seek to tapped position
-- **Hold and drag:** Fine control seek
+- **Swipe left:** Now Playing → Stats → Discover (once Slice 3.2 adds Discover)
+- **Swipe right:** Stats → Now Playing
 
-### Album Art Gallery
-- **Pinch out:** Zoom in on album art
-- **Pinch in:** Zoom out
-- **Drag:** Pan through zoomed image
+The **ProgressBar** is always excluded from swipe recognition so that tapping
+and dragging along the progress bar seeks without navigating. Every gesture
+action still has an equivalent button, so gestures never remove existing
+controls.
 
 ---
 
-## Long Press Actions
+## Scrollable Lists (ScrollList)
 
-Long press (500ms) on UI elements triggers context menus:
+`ui.widget.ScrollList` is a Tk `Frame` wrapping a `Canvas` with an inner frame.
+It handles drag scrolling with momentum:
 
-#### Album Art (Long Press)
-- Share: Share via Bluetooth / Messaging
-- Favorite: Mark as favorite
-- Set wallpaper: Set as home screen (if supported)
-- Details: Show track/artist/album info
+- Drag moves the list 1:1 with the finger.
+- Releasing with speed continues scrolling briefly, decaying by `friction` each
+  frame until it stops below 0.5 px/frame or reaches a list end.
+- A new press cancels momentum immediately.
+- `set_items(items, render_row)` populates the list; `on_select(callback)` fires
+  on row tap only; `on_swipe(callback)` receives horizontal swipes.
+- `<MouseWheel>` (Windows/macOS) and `<Button-4>`/`<Button-5>` (X11) scroll.
 
-#### Play/Pause (Long Press)
-- Shuffle: Enable/disable shuffle mode
-- Repeat: Cycle through repeat modes (off/one/all)
-- Sleep timer: Set auto-shutdown (15/30/60/90 min)
-
-#### Volume (Long Press)
-- Mute toggle
-- System volume controls
+For large libraries (~200+ rows), Slice 3.2 shows the first 200 plus a "More"
+row rather than building thousands of widgets.
 
 ---
 
-## Touch Calibration
+## Widget Authors
 
-### Adjusting Touch Sensitivity
+Use `ui.gestures.bind_gestures(widget, recognizer, on_event, exclude=())` to
+connect a `GestureRecognizer` to a Tk widget and all its descendants:
 
-Touchscreen calibration may be required for accurate input:
+- `exclude` skips a widget and its descendants. Always exclude the
+  `ProgressBar` (it seeks on `<Button-1>`).
+- Never bind on the root window or the `all` bindtag.
+- On a drag or long press, the pressed `TouchButton`/`TouchWidget` has its
+  pressed state cleared so its command does **not** fire at the end of a drag
+  (without this, scrolling a list of buttons would fire every button touched).
 
-```bash
-# Run calibration tool (if available)
-calibrate-screen
+## What's Planned (not yet built)
 
-# Or via Python script
-calibrate.py
-```
-
-### Common Touch Issues
-
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| Taps not registering | Touchscreen driver not loading | Check `/dev/input/eventX` exists |
-| Overly sensitive | Screen calibration off | Calibrate touch | |
-| Touch lag | Poor hardware or X11 config | Adjust X11 touch settings |
-| Unresponsive areas | Screen cracks | Physical repair needed |
-
----
-
-## Multi-Touch
-
-### Supported Multi-Touch Gestures
-
-- **Two-finger tap:** Right-click equivalent
-- **Two-finger swipe:** Scroll through lists
-- **Three-finger swipe:** Minimize/maximize UI
-- **Three-finger tap:** Show system menu (home, recent apps)
-
-### Multi-Touch in UI
-
-#### Queue Selection
-- **Multi-select:** Tap and hold one item, then tap others for multi-select mode
-- **Actions:** Play, Pause, Delete, Share
-
-#### Art Gallery Navigation
-- **Two-finger swipe:** Pan through album art grid
-- **Pinch to zoom:** Focus on specific album art
-
----
-
-## Cross-Distribution Touch Support
-
-### Raspberry Pi OS (Desktop)
-
-With Wayland (Bookworm default):
-
-```ini
-# /boot/firmware/config.txt
-# Enable touchscreen
-lte_vblank_sync=1
-dispmanx_display0_width=480
-dispmanx_display0_height=320
-touch_display=0
-```
-
-### Arch Linux
-
-```bash
-# Install xorg-xinput for calibration tools
-sudo pacman -S xorg-xinput
-
-# Check touch devices
-xinput --list
-```
-
-### Fedora
-
-```bash
-# Touchscreen should work out of the box
-# Verify with xinput --list
-```
-
----
-
-## Testing Touch Input
-
-### Manual Testing
-
-1. **Open calibration tool** (`calibrate-screen`)
-2. **Follow on-screen prompts**
-3. **Test all UI elements**
-4. **Verify gestures work correctly**
-
-### Automated Testing
-
-```python
-# Python script for touch testing
-from core.ui import TouchTester
-
-tester = TouchTester()
-tester.test_tap(target=play_pause_button)
-tester.test_swipe(direction='left')
-tester.test_drag(volume_slider, 0.75)
-tester.test_long_press(album_art, 'favorites_menu')
-```
-
----
-
-## Troubleshooting Touch Issues
-
-| Symptom | Diagnosis | Solution |
-|---------|-----------|----------|
-| Taps not working | Touch driver missing | Install touch firmware |
-| Ghost touches | Screen interference | Clean screen surface |
-| Unresponsive areas | Screen damage | Repair/replace screen |
-| Laggy response | X11 config issues | Adjust X11 polling rate |
-
----
-
-## Touch Performance Optimization
-
-### Battery Considerations
-
-For portable Pi Zero deployments:
-- **Touch polling:** 30Hz minimum, 60Hz optimal
-- **Screen brightness:** Auto-dim after 30 seconds inactivity
-- **Touch filtering:** Smooth rapid taps to prevent false positives
-
-### Performance Settings
-
-In `/etc/mpd.conf`:
-
-```ini
-# Limit MPD to lower CPU usage
-# (MPD handles audio decoding; Python app remains lightweight)
-```
-
-In `config.json`:
-
-```json
-{
-  "touch_sensitivity": 0.8,
-  "gesture_sensitivity": "medium",
-  "double_tap_time_ms": 250,
-  "long_press_time_ms": 500
-}
-```
-
----
-
-## Future Enhancements
-
-1. **Multi-touch gestures for quick actions**
-2. **Swipe gestures for playlist navigation**
-3. **Pinch zoom for album art detail**
-4. **Haptic feedback for button presses**
-5. **Voice command overlay**
-
----
-
-## Testing Touch Features
-
-### Manual Test
-
-1. Open app on touchscreen device
-2. Test all touch gestures described above
-3. Verify smooth, responsive interaction
-4. Test multi-touch where supported
-
-### Automated Test
-
-```bash
-# Run touch test suite
-python3 -m pytest tests/test_touch.py -v
-```
+- Multi-touch gestures — Tkinter exposes single-pointer events only
+- Swipe intensity / edge-swipe sections — replaced by threshold-based swipe
+- Long press on Play/Pause to show the queue — deferred to Slice 3.2
+- Live recolouring of themes — deferred to Slice 5.x
