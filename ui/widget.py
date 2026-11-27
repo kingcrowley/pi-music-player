@@ -490,14 +490,12 @@ class ScrollList(tk.Frame):
     def _on_gesture(self, name, *args, source=None):
         if name == "drag_move":
             dx, dy = args
-            # dy > 0 → finger down → content should scroll up → yview_scroll(-dy)
-            #   negative dy → drag up → should scroll down → -dy is positive
-            self._canvas.yview_scroll(-dy, "units")
+            # dy > 0 → finger moved down → reveal items below → scroll DOWN (positive units)
+            self._canvas.yview_scroll(dy, "units")
         elif name == "drag_end":
             vx, vy = args
-            # vy px/s → ScrollList converts to px/frame in _start_momentum.
-            # vy > 0 (finger moving down) → content scrolls up → negative units.
-            self._start_momentum(-vy)
+            # vy > 0 (finger moved down) → reveal items below → scroll DOWN (positive units)
+            self._start_momentum(vy)
         elif name == "tap":
             self._handle_tap(source)
         elif name == "swipe":
