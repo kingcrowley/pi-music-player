@@ -14,6 +14,7 @@ import tempfile
 import shutil
 import unittest
 import logging
+import sqlite3
 import tkinter as tk
 from unittest.mock import Mock, MagicMock, patch
 
@@ -21,6 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.stats import PlayStats
 from core.config import Config
+from plugins import PluginManager
+from plugins.recommendations.recommendations import MusicPlayerPlugin as RecommendationEngine
 from ui.dashboard import Dashboard
 
 RESULTS = []
@@ -705,6 +708,82 @@ class Slice22TestCase(unittest.TestCase):
             {"state": "play", "elapsed": elapsed, "duration": duration, "volume": "50"},
             {"file": file, "id": song_id, "title": "T", "artist": "A", "album": "Al"},
         )
+
+    def _make_dashboard_with_plugin(self, stats_enabled=True):
+        """Create a headless Dashboard wired to a real PluginManager.
+
+        The plugin manager loads the real recommendations plugin, and the
+        dashboard receives it via plugin_manager= so hook dispatch is exercised
+        exactly as main.py wires it.
+        """
+        self._root = tk.Tk()
+        self._root.withdraw()
+        tmpdir = tempfile.mkdtemp()
+        self.tmpdirs.append(tmpdir)
+        cfg = Config(os.path.join(tmpdir, "config.json"))
+        if not stats_enabled:
+            cfg.set("stats.enabled", False)
+        else:
+            cfg.set("stats.db_path", os.path.join(tmpdir, "stats.db"))
+        mp = MagicMock()
+        mp.get_status.return_value = {"state": "stop", "elapsed": 0.0, "duration": 0.0, "volume": "50"}
+        mp.get_current_song.return_value = {}
+        mp.config = cfg
+        artwork_cache = MagicMock()
+        artwork_cache.get_art.return_value = None
+        mgr = PluginManager(core_engine=mp, plugin_dir="plugins")
+        mgr.load_plugins()
+        with patch.object(Dashboard, "_start_poll_loop", lambda self: None):
+            self._dash = Dashboard(mp, artwork_cache, cfg, fullscreen=False, plugin_manager=mgr)
+        return self._dash
+
+    def test_update_ui_stop_replay_then_next_pair_recorded(self):
+        """Stop A, replay A, then play B → A–B pair is recorded.
+
+        Regression test for issue #15 finding 4: _on_song_change only fires on
+        a queue-entry change, so a stop-then-replay of the same track left the
+        plugin's _current slot cleared and the next track was never paired.
+        """
+        dash = self._make_dashboard_with_plugin(stats_enabled=True)
+        rec = dash.plugin_manager.get_plugin("recommendations")
+        try:
+            song_a = {"file": "a.mp3", "id": "1", "title": "TA", "artist": "ArtistA", "album": "AlA"}
+            song_b = {"file": "b.mp3", "id": "2", "title": "TB", "artist": "ArtistB", "album": "AlB"}
+            song_c = {"file": "c.mp3", "id": "3", "title": "TC", "artist": "ArtistC", "album": "AlC"}
+
+            # 1. Play A (row opens, on_song_change fires)
+            self._drive_update_ui({"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"}, song_a)
+            self.assertTrue(dash._play_row_active, "Playing poll should open a row")
+
+            # 2. Stop A (row finalized as stopped, plugin session cleared)
+            self._drive_update_ui({"state": "stop", "elapsed": 10.0, "duration": 300.0, "volume": "50"}, song_a)
+            self.assertFalse(dash._play_row_active, "Stop should finalize the row")
+
+            # 3. Replay A (same queue entry; stop→play reopens row, on_song_change fires).
+            #    elapsed above the completion threshold so the replayed A can be
+            #    finalized as completed when the next song change arrives.
+            self._drive_update_ui({"state": "play", "elapsed": 290.0, "duration": 300.0, "volume": "50"}, song_a)
+            self.assertTrue(dash._play_row_active, "Replay should reopen a row")
+
+            # 4. Play B (song change; A's replay finalized as completed → last_finished=A)
+            self._drive_update_ui({"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"}, song_b)
+            self.assertTrue(dash._play_row_active, "New row for B should open")
+
+            # 5. Play B again, still playing, near its end
+            self._drive_update_ui({"state": "play", "elapsed": 290.0, "duration": 300.0, "volume": "50"}, song_b)
+
+            # 6. Play C (song change; B finalized as completed → A–B pair recorded)
+            self._drive_update_ui({"state": "play", "elapsed": 10.0, "duration": 300.0, "volume": "50"}, song_c)
+
+            conn = sqlite3.connect(rec.db_path)
+            try:
+                pairs = conn.execute("SELECT artist_a, artist_b FROM cooccurrence").fetchall()
+            finally:
+                conn.close()
+            self.assertTrue(any(a == "ArtistA" and b == "ArtistB" for a, b in pairs),
+                            "Stop→replay→next track should pair ArtistA with ArtistB")
+        finally:
+            dash.plugin_manager.shutdown_all()
 
     def test_update_ui_unknown_status_keeps_row_open(self):
         """Unknown status poll does not close an active play row."""

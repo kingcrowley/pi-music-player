@@ -22,7 +22,7 @@ import sqlite3
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -385,9 +385,15 @@ class Slice31TestCase(unittest.TestCase):
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    imports.append(alias.name)
+                    # Compare only the top-level package name to catch submodule
+                    # imports (e.g. urllib.request should fail the check too).
+                    top = alias.name.split(".")[0]
+                    imports.append(top)
             elif isinstance(node, ast.ImportFrom):
-                imports.append(node.module)
+                if node.module:
+                    # Compare only the top-level package name.
+                    top = node.module.split(".")[0]
+                    imports.append(top)
         self.assertNotIn("requests", imports)
         self.assertNotIn("urllib", imports)
 
@@ -511,8 +517,131 @@ class Slice31TestCase(unittest.TestCase):
         mgr.shutdown_all()
 
     # ------------------------------------------------------------------
-    # Additional tests requested by reviewer
+    # Suggested tests from reviewer (issue #15)
     # ------------------------------------------------------------------
+
+    def test_plugin_starts_with_db_path_in_missing_directory(self):
+        """Plugin loads when stats.db_path points into a directory that doesn't exist yet."""
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+
+        nested_dir = os.path.join(d, "no", "such", "dir")
+        db_path = os.path.join(nested_dir, "test_play_stats.db")
+        player = MockMusicPlayer(db_path)
+
+        mgr = PluginManager(core_engine=player, plugin_dir=str(d))
+        loaded = mgr.load_plugins()
+        self.assertEqual(loaded, 1, "Expected 1 plugin to load")
+        mgr.shutdown_all()
+
+        # Plugin must have created the directory and connected to the db
+        self.assertTrue(os.path.exists(db_path))
+        self.assertTrue(os.path.exists(os.path.dirname(db_path)))
+
+    def test_scan_is_atomic_no_partial_rows(self):
+        """An interrupted library scan leaves album_songs empty so the next
+        start-up rescan (the scan checks COUNT(*) = 0 and retries).
+
+        The failure is triggered during the insert (not before any row is
+        gathered) so it genuinely exercises the BEGIN IMMEDIATE / ROLLBACK
+        path. Without the transaction, the first batch of rows would be
+        committed before the failing executemany and stay visible.
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+
+        class GoodCore:
+            def list_all_info(self):
+                return [
+                    {"file": "/music/a.flac", "artist": "A", "album": "Al", "title": "T", "genre": "Rock"},
+                    {"file": "/music/b.flac", "artist": "B", "album": "Al", "title": "T", "genre": "Rock"},
+                ]
+
+        class _FailingCursor:
+            """Cursor proxy that inserts the first row and then fails.
+
+            Writing a row before raising is what makes this test verify the
+            transaction: with BEGIN IMMEDIATE the row is rolled back (count 0),
+            but without it the row would remain committed (count 1).
+            """
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args):
+                return self._real.execute(sql, *args)
+
+            def executemany(self, sql, seq):
+                seq = list(seq)
+                if seq:
+                    self._real.execute(sql, seq[0])  # write one row first
+                raise RuntimeError("disk error mid-insert")
+
+            def fetchone(self):
+                return self._real.fetchone()
+
+            def fetchall(self):
+                return self._real.fetchall()
+
+        class _FailingConn:
+            def __init__(self, real):
+                self._real = real
+
+            def cursor(self):
+                return _FailingCursor(self._real.cursor())
+
+        plugin.core = GoodCore()
+        real_conn = plugin._conn
+        plugin._conn = _FailingConn(real_conn)
+        try:
+            plugin._scan_library_if_empty()
+        finally:
+            plugin._conn = real_conn
+
+        # No partial rows should be committed after the rolled-back scan.
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 0)
+
+        # Next scan with a healthy connection should succeed.
+        plugin.core = GoodCore()
+        plugin._scan_library_if_empty()
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 2)
+        plugin._conn.close()
+
+    def test_hook_dispatches_reach_on_playback_complete(self):
+        """Hooks dispatched through a real PluginManager reach _on_playback_complete."""
+        d = _make_temp_plugin_dir()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+        player = MockMusicPlayer(db_path)
+        mgr = PluginManager(core_engine=player, plugin_dir=str(d))
+        mgr.load_plugins()
+        rec = mgr.get_plugin("recommendations")
+
+        # Drive live pairing through the real PluginManager dispatch path
+        track_a = {"artist": "ArtistA", "album": "AlbumA", "title": "TrackA", "path": "/a.flac", "started_at": 1000}
+        track_b = {"artist": "ArtistB", "album": "AlbumB", "title": "TrackB", "path": "/b.flac", "started_at": 2000}
+        mgr.trigger_hook("on_song_change", track_a)
+        mgr.trigger_hook("on_playback_complete", track_a, completed=True, skipped=False)
+        mgr.trigger_hook("on_song_change", track_b)
+        mgr.trigger_hook("on_playback_complete", track_b, completed=True, skipped=False)
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT artist_a, artist_b, play_count FROM cooccurrence")
+        pairs = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0][:2], ("ArtistA", "ArtistB"))
+        mgr.shutdown_all()
 
     def test_main_passes_plugin_manager_to_dashboard(self):
         """main.py passes plugin_mgr to run_dashboard as plugin_manager."""
@@ -524,7 +653,7 @@ class Slice31TestCase(unittest.TestCase):
         self.assertIn("run_dashboard(", source)
 
     def test_lookup_during_rebuild_waits(self):
-        """A lookup during rebuild waits for the lock instead of failing."""
+        """A lookup during rebuild does not raise and sees correct results after."""
         d = _make_temp_plugin_dir()
         self.tmpdirs.append(d)
 
@@ -561,7 +690,9 @@ class Slice31TestCase(unittest.TestCase):
             rebuild_done.set()
 
         def do_lookup():
-            # Wait for rebuild to start and acquire lock
+            # Wait for rebuild to start. build_from_history() no longer holds
+            # the lock while computing, so the lookup must not block waiting
+            # for the whole rebuild — but it must not raise either.
             rebuild_started.wait(timeout=2.0)
             try:
                 result = rec.get_similar_artists("Artist0", limit=10)
@@ -580,8 +711,10 @@ class Slice31TestCase(unittest.TestCase):
 
         self.assertIsNone(lookup_exception[0], f"Lookup raised: {lookup_exception[0]}")
         self.assertIsNotNone(lookup_result[0], "Lookup returned None")
-        # 2 other artists (Artist1 and Artist4)
-        self.assertEqual(len(lookup_result[0]), 2)
+        # Once the rebuild finishes, the lookup sees the new matrix:
+        # Artist0 pairs with Artist1 and Artist4 (2 other artists).
+        final_result = rec.get_similar_artists("Artist0", limit=10)
+        self.assertEqual(len(final_result), 2)
         # Results should include Artist1 and Artist4
 
     def test_long_tracks_pairing(self):
@@ -758,6 +891,108 @@ class Slice31TestCase(unittest.TestCase):
 
         mgr.shutdown_all()
 
+    def test_execute_with_retry_holds_rlock(self):
+        """_execute_with_retry acquires the MPD RLock around the command.
+
+        Ensures that the RLock is wired in and used; without it concurrent
+        commands on the same MusicPlayer instance could interleave on the
+        shared python-mpd2 client socket.
+        """
+        player = MusicPlayer.__new__(MusicPlayer)
+        player._connected = True
+        player.client = MagicMock()
+        player.client.ping.return_value = None
+        acquired = []
+        class RecordingLock:
+            def __enter__(self):
+                acquired.append(True)
+                return self
+            def __exit__(self, *a):
+                return False
+        player._lock = RecordingLock()
+
+        def _cmd():
+            return player.client.status()
+
+        player.client.status.return_value = {"state": "play"}
+        player._execute_with_retry(_cmd)
+        self.assertTrue(
+            acquired, "Command should run under the player lock"
+        )
+
+    def test_list_all_info_own_client_normalizes_multi_value_tags(self):
+        """list_all_info_own_client() tidies list-valued tags into plain strings.
+
+        Simulating an MPD library where python-mpd2 returns repeated tags as
+        lists (e.g. genre: ["Rock", "Pop"]), the helper in
+        MusicPlayer._normalize_listallinfo converts them to plain comma-separated
+        strings so downstream code that reads ``track["artist"]`` or
+        ``track["genre"]`` works without list-valued tag failures (bug 1).
+        """
+        class FakeClient:
+            def __init__(self):
+                self.timeout = None
+            def connect(self, host, port):
+                pass
+            def listallinfo(self):
+                return [
+                    {"file": "/music/rock/a.flac", "artist": ["A", "B"], "album": "X",
+                     "genre": ["Rock", "Pop"], "title": "T", "time": "200"},
+                    {"directory": "/music/rock"},
+                ]
+            def close(self):
+                pass
+            def disconnect(self):
+                pass
+        from unittest.mock import patch
+        with patch("core.player.LibMPDClient", FakeClient):
+            player = MusicPlayer(host="localhost", port=6600)
+            result = player.list_all_info_own_client()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["path"], "/music/rock/a.flac")
+        self.assertEqual(result[0]["artist"], "A, B")
+        self.assertIn("Rock", result[0]["genre"])
+        self.assertIn("Pop", result[0]["genre"])
+
+    def test_scan_handles_multi_value_tags(self):
+        """A track with list-valued genre/artist tags is still written to album_songs.
+
+        The scan helper _as_text() converts list tags to plain strings before
+        inserting into album_songs, so bug 1 (list tags empty the library) does
+        not happen on real MPD either (where multi-value tags are common).
+        """
+        d = tempfile.mkdtemp()
+        self.tmpdirs.append(d)
+        db_path = os.path.join(d, "test.db")
+
+        # Core that returns raw list-valued tags (simulating an unnormalized
+        # source, e.g. an own-client path before normalization).
+        class Core:
+            def list_all_info(self):
+                return []
+            def list_all_info_own_client(self):
+                return [
+                    {"path": "/music/rock/a.flac", "artist": ["A", "B"],
+                     "album": "Al", "genre": ["Rock", "Pop"], "time": "200"},
+                    {"directory": "/music/rock"},
+                ]
+
+        plugin = RecommendationEngine({})
+        plugin.db_path = db_path
+        plugin._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        plugin._conn.execute("PRAGMA journal_mode=WAL")
+        plugin._create_schema()
+        plugin.core = Core()
+
+        # Invoked directly so we test the scan's own _as_text() handling of
+        # list-valued tags regardless of MPD-layer normalization.
+        plugin._scan_library_if_empty()
+
+        # album_songs should contain the track despite list-valued tags.
+        cur = plugin._conn.execute("SELECT COUNT(*) FROM album_songs")
+        self.assertEqual(cur.fetchone()[0], 1,
+                         "List-valued tags should not empty album_songs")
+        plugin._conn.close()
 
 if __name__ == "__main__":
     unittest.main()

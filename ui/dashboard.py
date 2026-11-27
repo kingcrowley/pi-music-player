@@ -967,6 +967,22 @@ class Dashboard(tk.Tk):
                 result = self._stats.record_play_start(song_for_stats)
                 if result:
                     self._play_row_active = True
+                    # Fire on_song_change right after the play row is opened so
+                    # the plugin tracks listening starts (started_at) even for
+                    # stop→replay of the same queue entry, which does not produce
+                    # a song-change transition on its own. Skip if the display
+                    # block will fire it for a genuine song change.
+                    if not song_changed:
+                        self._trigger_hook(
+                            "on_song_change",
+                            {
+                                "artist": song.get("artist", "").strip(),
+                                "album": song.get("album", "").strip(),
+                                "title": song.get("title", "").strip(),
+                                "path": song.get("file", "").strip(),
+                                "started_at": int(time.time()),
+                            },
+                        )
                 self._playback_restarted = False
             except Exception as e:
                 logger.warning("record_play_start failed: %s", e)
@@ -987,6 +1003,11 @@ class Dashboard(tk.Tk):
                     "started_at": int(time.time()),
                 },
             )
+            # Note: the hook is also fired in the should_open block above, but
+            # only when the row opens without a song change (stop→replay,
+            # repeat-one restart). song_changed here means the display block
+            # handles it, so the guard `if not song_changed` in should_open
+            # prevents a double fire for the same row.
 
     def _trigger_hook(self, event_name: str, *args, **kwargs) -> None:
         """Trigger an event hook on the plugin manager (if present).
